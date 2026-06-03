@@ -1,34 +1,71 @@
 using UnityEngine;
+using UnityEngine.InputSystem;
 
 public class CameraFollow : MonoBehaviour
 {
     [Header("Target da seguire")]
-    [Tooltip("Trascina qui l'oggetto che la telecamera deve seguire (es. la pallina)")]
     public Transform target;
 
-    [Header("Impostazioni Posizione")]
-    [Tooltip("La distanza fissa (X, Y, Z) della telecamera rispetto all'oggetto")]
-    public Vector3 offset = new Vector3(0f, 5f, -7f);
+    [Header("Impostazioni Orbita")]
+    public float rotationSpeed = 0.2f;
+    public float zoomSpeed = 2f;
+    public float minDistance = 2f;
+    public float maxDistance = 15f;
+    public float minPitch = 10f;
+    public float maxPitch = 80f;
 
+    [Header("Fluidità")]
     [Range(0f, 1f)]
-    [Tooltip("La fluidità dell'inseguimento. Valori più bassi = più fluido, 1 = istantaneo")]
     public float smoothness = 0.125f;
+
+    private float currentYaw = 0f;
+    private float currentPitch = 45f;
+    private float currentDistance = 7f;
+
+    private Vector3 currentVelocity = Vector3.zero;
+
+    void Start()
+    {
+        if (target != null)
+        {
+            Vector3 angles = transform.eulerAngles;
+            currentYaw = angles.y;
+            currentPitch = angles.x;
+            currentDistance = Vector3.Distance(transform.position, target.position);
+        }
+    }
 
     void LateUpdate()
     {
-        // Se non hai ancora assegnato l'oggetto nell'editor, interrompe l'esecuzione per evitare errori
         if (target == null) return;
 
-        // 1. Calcola la posizione desiderata (Posizione Target + Offset)
-        Vector3 desiredPosition = target.position + offset;
+        // Rotazione con il tasto destro del mouse
+        if (Mouse.current != null && Mouse.current.rightButton.isPressed)
+        {
+            Vector2 delta = Mouse.current.delta.ReadValue();
+            currentYaw += delta.x * rotationSpeed;
+            currentPitch -= delta.y * rotationSpeed;
+            currentPitch = Mathf.Clamp(currentPitch, minPitch, maxPitch);
+        }
 
-        // 2. Ammorbidisce il movimento usando Vector3.Lerp (Linear Interpolation)
-        Vector3 smoothedPosition = Vector3.Lerp(transform.position, desiredPosition, smoothness);
+        // Zoom con la rotella del mouse
+        if (Mouse.current != null)
+        {
+            float scroll = Mouse.current.scroll.ReadValue().y;
+            if (Mathf.Abs(scroll) > 0.01f)
+            {
+                currentDistance -= (scroll / 120f) * zoomSpeed;
+                currentDistance = Mathf.Clamp(currentDistance, minDistance, maxDistance);
+            }
+        }
 
-        // 3. Applica la posizione alla telecamera
-        transform.position = smoothedPosition;
+        // Calcolo della rotazione e posizione desiderata
+        Quaternion rotation = Quaternion.Euler(currentPitch, currentYaw, 0);
+        Vector3 negDistance = new Vector3(0.0f, 0.0f, -currentDistance);
+        Vector3 desiredPosition = rotation * negDistance + target.position;
 
-        // 4. (Opzionale) Forza la telecamera a guardare sempre verso il target
+        // Applicazione fluida
+        transform.position = Vector3.SmoothDamp(transform.position, desiredPosition, ref currentVelocity, smoothness);
         transform.LookAt(target.position);
     }
 }

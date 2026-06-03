@@ -32,17 +32,32 @@ public class ThrowBall : MonoBehaviour
     public int trajectorySegments = 20;
     public float trajectoryLength = 15f;
 
+    [Header("Impostazioni Spin (Effetto)")]
+    public float spinX = 0f; // -1 (Sinistra) a 1 (Destra)
+    public float spinY = 0f; // -1 (Sotto) a 1 (Sopra)
+    public float spinStrength = 0.5f; // Quanto lo spin influenza il punto di impatto
+
     private bool isAiming = false;
     private Vector3 dragStartPos;
     private float currentPower = 0f;
+    private float ballRadius = 0.5f;
+    private float initialCueOffset = 0f;
 
     void Start()
     {
         rb = GetComponent<Rigidbody>();
         mainCamera = Camera.main;
 
+        if (cueMesh != null)
+        {
+            initialCueOffset = cueMesh.localPosition.z;
+        }
+
+        SphereCollider sc = GetComponent<SphereCollider>();
+if (sc != null) ballRadius = sc.radius * transform.localScale.x;
+
         // Configurazione LineRenderer per linea di mira principale
-        lineRenderer = GetComponent<LineRenderer>();
+lineRenderer = GetComponent<LineRenderer>();
         lineRenderer.startWidth = lineWidth;
         lineRenderer.endWidth = lineWidth;
         lineRenderer.material = new Material(Shader.Find("Sprites/Default"));
@@ -80,13 +95,24 @@ public class ThrowBall : MonoBehaviour
         if (rb.linearVelocity.magnitude > 0.1f)
         {
             if (isAiming) ResetAim();
+            if (cuePivot != null) cuePivot.gameObject.SetActive(false); // Nascondi stecca se pallina in movimento
             return;
+        }
+        else
+        {
+            if (cuePivot != null) cuePivot.gameObject.SetActive(true);
         }
 
         // Il pivot segue sempre la pallina
         if (cuePivot != null)
         {
             cuePivot.position = transform.position;
+            
+            // Se non stiamo caricando il tiro, facciamo ruotare la stecca verso il mouse
+            if (!isAiming)
+            {
+                RotateCueTowardsMouse();
+            }
         }
 
         // 1. Inizio mira (click)
@@ -111,8 +137,19 @@ public class ThrowBall : MonoBehaviour
         }
     }
 
-    private void UpdateAiming()
+    private void RotateCueTowardsMouse()
     {
+        Vector3 mousePos = GetPointerWorldPosition();
+        Vector3 dir = (transform.position - mousePos).normalized;
+        dir.y = 0;
+        if (dir.sqrMagnitude > 0.001f)
+        {
+            cuePivot.forward = dir;
+        }
+    }
+
+    private void UpdateAiming()
+{
         Vector3 currentMousePos = GetPointerWorldPosition();
         
         // Direzione di trascinamento (dal punto di click al mouse attuale)
@@ -137,7 +174,7 @@ public class ThrowBall : MonoBehaviour
             // Arretrare la stecca lungo il suo asse Z per effetto carica
             if (cueMesh != null)
             {
-                cueMesh.localPosition = new Vector3(0, 0, dragDistance);
+                cueMesh.localPosition = new Vector3(0, 0, initialCueOffset + dragDistance);
             }
 
             // Disegnare la linea di mira principale (da pallina verso direzione tiro)
@@ -215,14 +252,30 @@ public class ThrowBall : MonoBehaviour
         {
             rb.linearVelocity = Vector3.zero;
             rb.angularVelocity = Vector3.zero;
-            rb.AddForce(shootDirection * appliedForce, ForceMode.Impulse);
+
+            // Calcolo del punto di impatto con spin
+            // sideAxis è perpendicolare alla direzione del tiro sul piano orizzontale
+            Vector3 sideAxis = Vector3.Cross(Vector3.up, shootDirection).normalized;
+            Vector3 upAxis = Vector3.up;
+
+            // Il punto di impatto è sul "retro" della pallina, traslato in base allo spin
+            Vector3 hitOffset = (sideAxis * -spinX + upAxis * spinY) * ballRadius * spinStrength;
+            Vector3 hitPoint = transform.position - (shootDirection * ballRadius) + hitOffset;
+
+            rb.AddForceAtPosition(shootDirection * appliedForce, hitPoint, ForceMode.Impulse);
         }
 
         // Riposiziona la stecca
         if (cueMesh != null)
         {
-            cueMesh.localPosition = Vector3.zero;
+            cueMesh.localPosition = new Vector3(0, 0, initialCueOffset);
         }
+    }
+
+    public void SetSpin(float x, float y)
+    {
+        spinX = Mathf.Clamp(x, -5f, 5f);
+        spinY = Mathf.Clamp(y, -5f, 5f);
     }
 
     private void ResetAim()
@@ -230,7 +283,7 @@ public class ThrowBall : MonoBehaviour
         isAiming = false;
         lineRenderer.positionCount = 0;
         trajectoryLineRenderer.positionCount = 0;
-        if (cueMesh != null) cueMesh.localPosition = Vector3.zero;
+        if (cueMesh != null) cueMesh.localPosition = new Vector3(0, 0, initialCueOffset);
     }
 
     private Vector3 GetPointerWorldPosition()
