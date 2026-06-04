@@ -8,10 +8,10 @@ public class SpinUI : MonoBehaviour
     private float currentX = 0f;
     private float currentY = 0f;
 
-    public void OnTopClick() => UpdateSpin(0, 5f);
-    public void OnBottomClick() => UpdateSpin(0, -5f);
-    public void OnLeftClick() => UpdateSpin(-5f, 0);
-    public void OnRightClick() => UpdateSpin(5f, 0);
+    public void OnTopClick() => UpdateSpin(0, 100f);
+    public void OnBottomClick() => UpdateSpin(0, -100f);
+    public void OnLeftClick() => UpdateSpin(-100f, 0);
+    public void OnRightClick() => UpdateSpin(100f, 0);
     public void OnResetClick() => UpdateSpin(0, 0);
 
     private void UpdateSpin(float x, float y)
