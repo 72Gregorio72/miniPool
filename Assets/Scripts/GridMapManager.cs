@@ -17,7 +17,8 @@ public class GridMapManager : MonoBehaviour, ISerializationCallbackReceiver
         Angolo,
         DoubleEdge,
         TripleEdge,
-        Closed
+        Closed,
+        Hole
     }
 
     [System.Serializable]
@@ -32,6 +33,8 @@ public class GridMapManager : MonoBehaviour, ISerializationCallbackReceiver
         public GameObject prefabDoubleEdge;
         public GameObject prefabTripleEdge;
         public GameObject prefabClosed;
+
+		public GameObject Hole;
     }
 
     [SerializeField]
@@ -138,6 +141,8 @@ public class GridMapManager : MonoBehaviour, ISerializationCallbackReceiver
                 return tileSet.prefabTripleEdge;
             case ManualTileKind.Closed:
                 return tileSet.prefabClosed;
+            case ManualTileKind.Hole:
+                return tileSet.Hole;
             default:
                 return null;
         }
