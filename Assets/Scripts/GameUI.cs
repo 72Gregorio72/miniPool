@@ -322,7 +322,7 @@ public class GameUI : MonoBehaviour
             hit.color = Color.clear; // invisible hit target under the 3D ball
             var btn = slot.gameObject.AddComponent<Button>();
             btn.transition = Selectable.Transition.None;
-            btn.onClick.AddListener(() => onPlay?.Invoke(lv));
+            btn.onClick.AddListener(() => { Sfx.Play(Sfx.Kind.Click, 1); onPlay?.Invoke(lv); });
             var trigger = slot.gameObject.AddComponent<EventTrigger>();
             var enter = new EventTrigger.Entry { eventID = EventTriggerType.PointerEnter };
             enter.callback.AddListener(_ => Select(lv));
@@ -890,7 +890,7 @@ public class GameUI : MonoBehaviour
         colors.pressedColor = new Color(0.75f, 0.75f, 0.75f);
         colors.fadeDuration = 0.08f;
         b.colors = colors;
-        b.onClick.AddListener(() => click());
+        b.onClick.AddListener(() => { Sfx.Play(Sfx.Kind.Click, 1); click(); });
         Label(rt, s, 30, fg, Vector2.zero, size, bold: true);
         return b;
     }

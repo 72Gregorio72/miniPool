@@ -56,16 +56,19 @@ public static class Juice
         p.t = 0;
     }
 
-    public static void Pot(Vector3 at, Color color)
+    // color of cube i of ball n: stripes (9-15) are 60% their color, 40% white
+    static Color CubeColor(int n, int i) => n is > 8 and < 16 && i % 5 < 2 ? BallArt.Colors[0] : BallArt.ColorOf(n);
+
+    public static void Pot(Vector3 at, int number)
     {
-        if (Application.isPlaying) Run.StartCoroutine(Burst(at, color));
+        if (Application.isPlaying) Run.StartCoroutine(Burst(at, number));
     }
 
-    static IEnumerator Burst(Vector3 at, Color color)
+    static IEnumerator Burst(Vector3 at, int number)
     {
-        var bits = Enumerable.Range(0, 24).Select(_ =>
+        var bits = Enumerable.Range(0, 24).Select(i =>
         {
-            var c = Cube(at, 0.08f, color);
+            var c = Cube(at, 0.08f, CubeColor(number, i));
             var dir = Random.insideUnitCircle;
             return (t: c.transform, v: new Vector3(dir.x * 2.5f, Random.Range(3f, 6f), dir.y * 2.5f), spin: Random.insideUnitSphere * 720);
         }).ToArray();
@@ -87,12 +90,12 @@ public static class Juice
     }
 
     // the ball breaks into PhysX cubes that bounce on the floor and on each other
-    public static void Shatter(Vector3 at, Vector3 velocity, float floorY, Color color)
+    public static void Shatter(Vector3 at, Vector3 velocity, float floorY, int number)
     {
-        if (Application.isPlaying) Run.StartCoroutine(Shards(at, velocity, floorY, color));
+        if (Application.isPlaying) Run.StartCoroutine(Shards(at, velocity, floorY, number));
     }
 
-    static IEnumerator Shards(Vector3 at, Vector3 velocity, float floorY, Color color)
+    static IEnumerator Shards(Vector3 at, Vector3 velocity, float floorY, int number)
     {
         // shortcut: the level has no colliders, so the shards land on an invisible 3x3-tile slab at the spike's height
         // (they fall through rails and over voids); build real table colliders if shards should bounce off rails
@@ -111,7 +114,7 @@ public static class Juice
         {
             var off = (new Vector3(x, y, z) - Vector3.one * (n - 1) / 2f) * size;
             if (off.magnitude > Ball.Radius) continue; // a sphere of cubes
-            var rb = Cube(at + off, size * 0.9f, color).AddComponent<Rigidbody>(); // CreatePrimitive's BoxCollider stays
+            var rb = Cube(at + off, size * 0.9f, CubeColor(number, shards.Count)).AddComponent<Rigidbody>(); // CreatePrimitive's BoxCollider stays
             rb.mass = 0.02f;
             rb.linearVelocity = flat * 0.3f + off.normalized * Random.Range(1.5f, 3f) + Vector3.up * Random.Range(1.5f, 3.5f);
             rb.angularVelocity = Random.insideUnitSphere * 15;

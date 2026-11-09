@@ -156,9 +156,9 @@ public class MeshBuilder
 
     public void Top(TPoly p, float y) => Face(p.pts.Select(q => V(q, y)).ToArray(), Vector3.up);
 
-    public void Build(string name, Material mat, Transform parent)
+    public GameObject Build(string name, Material mat, Transform parent)
     {
-        if (verts.Count == 0) return;
+        if (verts.Count == 0) return null;
         var mesh = new Mesh { name = name, indexFormat = UnityEngine.Rendering.IndexFormat.UInt32 };
         mesh.SetVertices(verts);
         mesh.SetTriangles(tris, 0);
@@ -168,5 +168,6 @@ public class MeshBuilder
         go.transform.SetParent(parent, false);
         go.GetComponent<MeshFilter>().sharedMesh = mesh;
         go.GetComponent<MeshRenderer>().sharedMaterial = mat;
+        return go;
     }
 }

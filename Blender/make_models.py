@@ -238,6 +238,13 @@ def plate(name, top=None, height=0.1):
     export(chamfer_box(name, (1, 1, height), 0.03, name, top), name)
 
 
+def lamp():
+    # pool-table pendant: green dome shade, warm glowing disc underneath, brass cap on top
+    reset()
+    profile = [(0, 0.5, 1), (0.08, 0.5, 0), (0.45, 0.4, 0), (0.75, 0.18, 0), (0.85, 0.08, 2), (1.0, 0.06, 2)]
+    export(lathe("Lamp", profile, ["LampShade", "LampGlow", "Brass"], segments=8), "Lamp")
+
+
 cue()
 ball()
 pillar()
@@ -258,3 +265,4 @@ plate("Ice")
 plate("Sand")
 plate("Belt")
 plate("Platform", "Felt", 0.2)
+lamp()

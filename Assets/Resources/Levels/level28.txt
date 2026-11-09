@@ -1,0 +1,15 @@
+#################
+#.....#IIIIIIIII#
+#.....#YIIIIIIII#
+#.....#IIIIIIIII#
+#...T.#IIIIIIIII#
+#.....#IIIIIIIII#
+#.....#IIIIIIIII#
+#.....#IIIIIIIII#
+###############O#
+---
+> 4 4 0
+> 7 6 90
+0 6 3
+D 30 12
+tiri 2

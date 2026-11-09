@@ -2,7 +2,7 @@ using System.Linq;
 using NUnit.Framework;
 using UnityEngine;
 
-// every shipped level builds and is playable: a cue ball, the black and a pocket
+// every shipped level builds and is playable: a cue ball, the level's ball (Worlds.BallOf) and a pocket
 public class LevelsTests
 {
     [Test] public void EveryLevelHasCueBlackAndPocket()
@@ -15,7 +15,8 @@ public class LevelsTests
             try
             {
                 Assert.IsTrue(lv.balls.Any(b => b.number == 0), $"{t.name}: manca la bianca");
-                Assert.IsTrue(lv.balls.Any(b => b.number == 8), $"{t.name}: manca la nera");
+                int goal = Worlds.BallOf(int.Parse(t.name.Substring(5)));
+                Assert.IsTrue(lv.balls.Any(b => b.number == goal), $"{t.name}: manca la palla {goal}");
                 Assert.IsNotEmpty(lv.pockets, $"{t.name}: manca la buca");
             }
             finally { Object.DestroyImmediate(lv.root.gameObject); }

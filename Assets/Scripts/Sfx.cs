@@ -7,18 +7,22 @@ using UnityEngine;
 // shortcut: multiplayer clients don't run the physics, so they only hear their own cue; send hits in the state if it matters
 public class Sfx : MonoBehaviour
 {
-    // Boost..Gate = modules (Land = a flying ball touching down); clips made by Tools/make_sfx.mjs
-    public enum Kind { Ball, Cushion, Cue, Pocket, Boost, Fan, Land, Portal, Bumper, Manhole, Spikes, Magnet, Button, Gate }
+    // Boost..Gate = modules (Land = a flying ball touching down), Click..Crown = UI; clips made by Tools/make_sfx.mjs
+    public enum Kind { Ball, Cushion, Cue, Pocket, Boost, Fan, Land, Portal, Bumper, Manhole, Spikes, Magnet, Button, Gate, Click, Win, Fail, Crown }
 
-    const float SfxVolume = 0.7f, MusicVolume = 0.3f;
+    const float SfxVolume = 0.7f, MusicVolume = 0.22f; // music under the ball clicks (0.3 covered them)
     const float Soft = 0.25f;     // below this a hit uses the soft variants
     // seconds before the same kind plays again (unless louder): a cue ball with follow keeps nudging the ball it stopped behind,
     // and those micro-contacts played every few frames buzz like a broken TV
     const float Repeat = 0.15f;
     // seconds kept of each kind (by Kind): the generated clips trail off in hiss that sounds like a broken TV
-    static readonly float[] MaxLength = { 0.15f, 0.25f, 0.15f, 0.5f, 0.55f, 0.55f, 0.3f, 0.65f, 0.4f, 0.45f, 0.45f, 0.4f, 0.2f, 0.55f };
+    static readonly float[] MaxLength = { 0.15f, 0.2f, 0.15f, 0.5f, 0.45f, 0.4f, 0.25f, 0.5f, 0.35f, 0.4f, 0.4f, 0.35f, 0.15f, 0.4f, 0.1f, 1.4f, 0.7f, 2.3f };
+    // by Kind (production/audio/sfx-e-musica/sfx-spec.md): loudness in the mix, and random pitch ± % (0 for the tonal ones, in key with the music)
+    static readonly float[] Gain = { 0.85f, 0.75f, 0.8f, 0.8f, 0.6f, 0.6f, 0.65f, 0.6f, 0.7f, 0.65f, 0.7f, 0.6f, 0.6f, 0.65f, 0.5f, 0.7f, 0.45f, 0.8f };
+    static readonly float[] Pitch = { 4, 4, 3, 3, 5, 5, 4, 0, 5, 4, 3, 4, 3, 4, 2, 0, 0, 0 };
     static Sfx inst;
-    AudioSource source, music;
+    AudioSource[] sources; // one per kind: pitch is per source
+    AudioSource music;
     AudioClip[][] clips, softClips;
     static readonly int KindCount = System.Enum.GetValues(typeof(Kind)).Length;
     readonly float[] pending = new float[KindCount], lastAt = new float[KindCount], lastVolume = new float[KindCount];
@@ -46,18 +50,17 @@ public class Sfx : MonoBehaviour
     void Awake()
     {
         DontDestroyOnLoad(gameObject);
-        source = gameObject.AddComponent<AudioSource>();
         if (FindAnyObjectByType<AudioListener>() == null) gameObject.AddComponent<AudioListener>();
 
         var kinds = (Kind[])System.Enum.GetValues(typeof(Kind));
         clips = new AudioClip[kinds.Length][];
         softClips = new AudioClip[kinds.Length][];
+        sources = new AudioSource[kinds.Length];
         for (int i = 0; i < kinds.Length; i++)
         {
             clips[i] = Load("Audio/" + kinds[i], MaxLength[i]);
             softClips[i] = Load("Audio/" + kinds[i] + "Soft", MaxLength[i]);
-            foreach (var c in clips[i]) Debug.Log($"[Sfx] kept {c.name} {c.length:F3}s"); // TEMP
-            foreach (var c in softClips[i]) Debug.Log($"[Sfx] kept {c.name} {c.length:F3}s"); // TEMP
+            sources[i] = gameObject.AddComponent<AudioSource>();
         }
 
         music = gameObject.AddComponent<AudioSource>();
@@ -73,7 +76,7 @@ public class Sfx : MonoBehaviour
         {
             float s = pending[i];
             pending[i] = 0;
-            if (s <= 0 || Time.time - lastAt[i] < Repeat && s <= lastVolume[i]) continue;
+            if (s <= 0 || Time.unscaledTime - lastAt[i] < Repeat && s <= lastVolume[i]) continue;
             bool soft = s < Soft && softClips[i].Length > 0;
             var set = soft ? softClips[i] : clips[i];
             if (set.Length == 0) continue;
@@ -81,9 +84,9 @@ public class Sfx : MonoBehaviour
             float lo = !soft && softClips[i].Length > 0 ? Soft : 0, hi = soft ? Soft : 1, t = Mathf.InverseLerp(lo, hi, s);
             float volume = soft ? Mathf.Lerp(0.2f, 0.6f, t) : Mathf.Lerp(lo > 0 ? 0.6f : 0.4f, 1, t);
             var clip = set[Random.Range(0, set.Length)];
-            source.PlayOneShot(clip, volume * SfxVolume);
-            Debug.Log($"[Sfx] {Time.time:F2} {clip.name} len {clip.length:F2}s strength {s:F2} volume {volume:F2}"); // TEMP: finding the noisy clip
-            lastAt[i] = Time.time;
+            sources[i].pitch = 1 + Random.Range(-Pitch[i], Pitch[i]) / 100;
+            sources[i].PlayOneShot(clip, volume * Gain[i] * SfxVolume);
+            lastAt[i] = Time.unscaledTime; // the pause menu stops Time.time
             lastVolume[i] = s;
         }
     }

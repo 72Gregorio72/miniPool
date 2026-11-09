@@ -58,13 +58,18 @@ public static class BallArt
         set { PlayerPrefs.SetInt("MiniPool.skin", value); PlayerPrefs.Save(); }
     }
 
+    // grey ball (`*` in the level): plain, no number, only there to move the cue around without a foul
+    public const int Grey = 16;
+    static readonly Color GreyColor = new(0.55f, 0.55f, 0.57f);
+
     // main color of ball n (stripes: their band); shortcut: online every cue ball gets the local skin, pass the owner's if it shows
-    public static Color ColorOf(int n) => n == 0 ? Skins[SelectedSkin].body : Colors[n > 8 ? n - 8 : n];
+    public static Color ColorOf(int n) => n == 0 ? Skins[SelectedSkin].body : n == Grey ? GreyColor : Colors[n > 8 ? n - 8 : n];
 
     // n = 0 is the cue ball with the chosen skin
     public static Material Material(int n)
     {
         if (n == 0) return CueMaterial(SelectedSkin);
+        if (n == Grey) return Cached(n, () => Texture(0, GreyColor, GreyColor));
         var color = Colors[n <= 8 ? n : n - 8];
         return Cached(n, () => Texture(n, n > 8 ? Colors[0] : color, color));
     }

@@ -6,7 +6,7 @@ using UnityEngine;
 public static partial class LevelBuilder
 {
     public const float TableHeight = 5.3f; // 76 cm at 1/7 scale
-    const string BallChars = "0123456789ABCDEF";
+    const string BallChars = "0123456789ABCDEF*"; // * = grey ball (BallArt.Grey)
 
     public class Level
     {
@@ -386,6 +386,10 @@ public static partial class LevelBuilder
         return pockets.OrderByDescending(p => (p - cue).sqrMagnitude).Select(p => MovePocket(text, p)).FirstOrDefault(t => t != null) ?? text;
     }
 
+    // online every player chases an 8: the level's own ball (Worlds.BallOf) becomes the 8
+    public static string GoalToEight(string text, int ball) =>
+        text == null ? null : System.Text.RegularExpressions.Regex.Replace(text, $@"(?m)^{BallChars[ball]}(?= -?\d+ -?\d+\s*$)", "8");
+
     // objects stand on a tile instead of being one; still accepted inside the grid (centered on that tile, felt under it)
     public static bool IsObject(char c) => c == 'R' || BallChars.IndexOf(c) >= 0;
 
@@ -446,7 +450,6 @@ public static partial class LevelBuilder
 
     static void TableBase(Level lv)
     {
-        var b = lv.bounds;
         float legTop = FloorThickness + 0.6f;
         int w = lv.tiles.GetLength(0), h = lv.tiles.GetLength(1);
         bool Solid(int x, int z) => !IsVoid(At(lv.tiles, new Vector2Int(x, z)));
@@ -469,7 +472,6 @@ public static partial class LevelBuilder
                             if (!Solid(x + sx, z) && !Solid(x, z + sz))
                                 Visual("Leg", PrimitiveType.Cylinder, new Vector3(x - sx * 0.1f, -(legTop + TableHeight) / 2, z - sz * 0.1f),
                                     new Vector3(0.9f, TableHeight - legTop, 0.9f), Quaternion.identity, DarkWood, lv.root);
-        Visual("RoomFloor", PrimitiveType.Cube, b.center + Vector3.down * (TableHeight + 0.05f), new Vector3(120, 0.1f, 120), Quaternion.identity, RoomColor, lv.root);
     }
 
     // Standard 8-ball rack, apex on `apex`, rows growing toward +x.
@@ -514,6 +516,7 @@ public static partial class LevelBuilder
     static readonly Color ButtonColor = new(0.95f, 0.2f, 0.25f), GateColor = new(0.95f, 0.75f, 0.2f), TimedColor = new(0.6f, 0.35f, 0.9f);
     static readonly Color BumperColor = new(1f, 0.35f, 0.6f), BeltColor = new(0.2f, 0.22f, 0.26f), MagnetColor = new(0.85f, 0.15f, 0.15f);
     static readonly Color PlatformColor = new(0.35f, 0.75f, 0.6f);
+    static readonly Color LampShadeColor = new(0.05f, 0.32f, 0.2f), LampGlowColor = new(1f, 0.86f, 0.55f), BrassColor = new(0.85f, 0.65f, 0.25f);
 
     // Blender material name -> color (Unity's FBX import colors aren't reliable in URP)
     static readonly Dictionary<string, Color> Palette = new()
@@ -525,7 +528,9 @@ public static partial class LevelBuilder
         ["FanHousing"] = FanColor, ["FanDuct"] = DuctColor, ["FanBlade"] = BladeColor, ["FanHub"] = HubColor, ["BoosterPlate"] = BoosterColor,
         ["PortalBlue"] = PortalBlueColor, ["PortalOrange"] = PortalOrangeColor, ["PortalCore"] = PortalCoreColor, ["Ice"] = IceColor, ["Sand"] = SandColor,
         ["Grate"] = GrateColor, ["ButtonCap"] = ButtonColor, ["Gate"] = GateColor, ["TimedWall"] = TimedColor, ["Bumper"] = BumperColor, ["BumperBase"] = BeltColor,
-        ["Belt"] = BeltColor, ["Magnet"] = MagnetColor, ["Platform"] = PlatformColor, ["Stripe"] = new(0.12f, 0.12f, 0.14f),    };
+        ["Belt"] = BeltColor, ["Magnet"] = MagnetColor, ["Platform"] = PlatformColor, ["Stripe"] = new(0.12f, 0.12f, 0.14f),
+        ["LampShade"] = LampShadeColor, ["LampGlow"] = LampGlowColor, ["Brass"] = BrassColor,
+    };
 
     // world look for the next Build (models pick their wood/felt through Palette)
     public static void SetTheme(Worlds.Theme t)
@@ -535,6 +540,7 @@ public static partial class LevelBuilder
         Palette["Wood"] = Wood = t.wood;
         Palette["DarkWood"] = DarkWood = t.darkWood;
         RoomColor = t.room;
+        hall = t.hall;
     }
 
     public static Ball SpawnBall(int n, Vector3 pos, Transform parent)

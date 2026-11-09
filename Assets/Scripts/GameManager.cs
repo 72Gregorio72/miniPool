@@ -95,7 +95,7 @@ public class GameManager : MonoBehaviour
         mp = gameObject.AddComponent<MultiplayerGame>();
         mp.ui = ui;
         mp.game = this;
-        ui.onHost = () => mp.Host(Resources.Load<TextAsset>($"Levels/level{levels.FirstOrDefault():00}")?.text);
+        ui.onHost = () => mp.Host(LevelBuilder.GoalToEight(Resources.Load<TextAsset>($"Levels/level{levels.FirstOrDefault():00}")?.text, Worlds.BallOf(levels.FirstOrDefault())));
         ui.onHostPool = () => mp.Host(Resources.Load<TextAsset>("PoolTable")?.text, pool: true);
         ui.onJoin = mp.Join;
         levels = Resources.LoadAll<TextAsset>("Levels")
@@ -138,6 +138,7 @@ public class GameManager : MonoBehaviour
         if (level != null) Destroy(level.root.gameObject);
         ApplyTheme(index);
         level = LevelBuilder.Build(text.text, text.name);
+        LevelBuilder.Room(level);
     }
 
     float previewYaw = 60;
@@ -191,6 +192,7 @@ public class GameManager : MonoBehaviour
         levelIndex = index;
         ApplyTheme(index);
         level = LevelBuilder.Build(text.text, text.name);
+        LevelBuilder.Room(level);
         cue = level.balls.FirstOrDefault(b => b.number == 0);
         if (!cue)
         {
@@ -289,8 +291,8 @@ public class GameManager : MonoBehaviour
         }
         if (state != State.Rolling) return;
 
-        // slow motion while the black rolls into a pocket (single player only: online the clock is the host's)
-        var black = level.balls.FirstOrDefault(b => b.number == 8);
+        // slow motion while the level's ball rolls into a pocket (single player only: online the clock is the host's)
+        var black = level.balls.FirstOrDefault(b => b.number == Worlds.BallOf(levelIndex));
         float slow = black && Juice.Approach(level, black) > 0 ? Juice.SlowScale : 1;
         Time.timeScale = Mathf.MoveTowards(Time.timeScale, slow, Time.unscaledDeltaTime * 4);
 
@@ -308,9 +310,10 @@ public class GameManager : MonoBehaviour
 
     void EndShot()
     {
-        var o = Rules.Evaluate(firstHit, potted, lost);
+        var o = Rules.Evaluate(firstHit, potted, lost, target: Worlds.BallOf(levelIndex));
         if (o.restart)
         {
+            Sfx.Play(Sfx.Kind.Fail, 1);
             Load(levelIndex);
             message = o.message + "\nSi ricomincia il livello";
             return;
@@ -343,8 +346,10 @@ public class GameManager : MonoBehaviour
         if (record) PlayerPrefs.SetInt($"MiniPool.best.{levelIndex}", shots);
         PlayerPrefs.Save();
 
+        bool crown = Crown(levelIndex) && !hadCrown;
+        Sfx.Play(crown ? Sfx.Kind.Crown : Sfx.Kind.Win, 1);
         var notes = new List<string>();
-        if (Crown(levelIndex) && !hadCrown) notes.Add("Corona conquistata!");
+        if (crown) notes.Add("Corona conquistata!");
         else if (first) notes.Add("Primo completamento!");
         else if (record) notes.Add("Nuovo record!");
         notes.AddRange(locked.Where(BallArt.Unlocked).Select(s => $"Nuova skin sbloccata: {BallArt.Skins[s].name}"));
@@ -370,7 +375,7 @@ public class GameManager : MonoBehaviour
         if (state is State.Menu or State.Multiplayer || paused) return;
         var style = new GUIStyle(GUI.skin.label) { fontSize = 22, normal = { textColor = Color.white } };
         int par = Par(levelIndex); // shortcut: reads the level file every frame, fine while the HUD is IMGUI
-        GUI.Label(new Rect(16, 12, 1600, 32), $"Livello {levelIndex}   Tiri {shots}{(par > 0 ? $" (corona: {par})" : "")}   Obiettivo: manda in buca la nera (non perdere la bianca o la nera, colpisci sempre una palla)", style);
+        GUI.Label(new Rect(16, 12, 1600, 32), $"Livello {levelIndex}   Tiri {shots}{(par > 0 ? $" (corona: {par})" : "")}   Obiettivo: manda in buca la {Worlds.BallOf(levelIndex)} (non perdere la bianca o la {Worlds.BallOf(levelIndex)}, colpisci sempre una palla)", style);
         if (!string.IsNullOrEmpty(message)) GUI.Label(new Rect(16, 44, 1200, 120), message, style);
         style.fontSize = 16;
         GUI.Label(new Rect(16, Screen.height - 52, 1400, 48),

@@ -2,8 +2,9 @@ using System.Collections.Generic;
 using System.Linq;
 
 // Level rules, kept pure so they can be unit-tested.
-// Goal: pot the 8. Object balls (1-7, 9-15) can be potted or lost freely, in any order.
-// The level restarts only on a cue foul (no ball hit, cue potted, cue lost) or when the 8 is lost (off the table / spikes).
+// Goal: pot the level's ball (single player: Worlds.BallOf, online: the 8). Every other ball (grey ones too) can be potted
+// or lost freely, in any order. The level restarts only on a cue foul (no ball hit, cue potted, cue lost) or when the
+// target ball is lost (off the table / spikes).
 public static class Rules
 {
     public struct Outcome
@@ -19,15 +20,16 @@ public static class Rules
     /// <param name="potted">balls that dropped into a pocket this shot</param>
     /// <param name="lost">balls that left the table without a pocket (fell off, spikes) this shot</param>
     /// <param name="noHitOk">multiplayer: a shot that hits nothing is fine (moving the cue into position)</param>
-    public static Outcome Evaluate(int firstHit, IReadOnlyCollection<int> potted, IReadOnlyCollection<int> lost, bool noHitOk = false)
+    /// <param name="target">the ball to pot</param>
+    public static Outcome Evaluate(int firstHit, IReadOnlyCollection<int> potted, IReadOnlyCollection<int> lost, bool noHitOk = false, int target = 8)
     {
         var o = new Outcome();
         if (potted.Contains(0)) o.message = "Bianca in buca";
         else if (lost.Contains(0)) o.message = "Bianca persa";
         else if (firstHit < 0 && !noHitOk) o.message = "Nessuna palla colpita";
-        else if (lost.Contains(8)) o.message = "Nera persa";
+        else if (lost.Contains(target)) o.message = target == 8 ? "Nera persa" : $"Palla {target} persa";
         o.restart = o.message != null;
-        o.win = !o.restart && potted.Contains(8);
+        o.win = !o.restart && potted.Contains(target);
         return o;
     }
 

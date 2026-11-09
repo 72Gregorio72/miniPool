@@ -8,7 +8,7 @@ public class PhysicsTests
 
     LevelBuilder.Level Make(string row) => lv = LevelBuilder.Build("###########################################\n" + row + "\n###########################################", "test");
 
-    [TearDown] public void Clean() => Object.DestroyImmediate(lv.root.gameObject);
+    [TearDown] public void Clean() { if (lv?.root) Object.DestroyImmediate(lv.root.gameObject); lv = null; } // pure-logic tests build no level
 
     static float Slip(Ball b) => new Vector2(b.v.x + Ball.Radius * b.w.z, b.v.z - Ball.Radius * b.w.x).magnitude;
 
@@ -190,7 +190,7 @@ public class PhysicsTests
         lv = LevelBuilder.Build("#####\n#...#\n#0.^#\n#...#\n#...#\n#####", "test");
         var b = lv.balls[0];
         PoolPhysics.Shoot(b, Vector3.right, 6, 0, 0.4f);
-        PoolPhysics.Simulate(lv, 0.3f);
+        PoolPhysics.Simulate(lv, 0.37f); // pushed at the center (~0.34 s), not yet back from the far rail (~0.42 s)
         Assert.Greater(b.v.z, PoolPhysics.BoostSpeed * 0.8f);
     }
 
@@ -249,7 +249,7 @@ public class PhysicsTests
         lv = LevelBuilder.Build("#####\n#...#\n#0.^#\n#...#\n#...#\n#####", "test");
         var b = lv.balls[0];
         PoolPhysics.Shoot(b, Vector3.right, 6, 0.4f, -0.4f); // side spin + draw
-        for (int i = 0; i < 60 && b.v.z < 1; i++) PoolPhysics.Simulate(lv, 0.01f);
+        for (int i = 0; i < 150 && b.v.z < 1; i++) PoolPhysics.Simulate(lv, 0.01f); // draw slows it: center reached at ~0.63 s
         Assert.Greater(b.v.z, PoolPhysics.BoostSpeed * 0.8f, "pushed");
         Assert.AreEqual(0, b.w.y, 1e-3f, "no side spin");
         Assert.AreEqual(b.v.z / Ball.Radius, b.w.x, 0.5f, "plain rolling, no draw or follow");
@@ -279,7 +279,7 @@ public class PhysicsTests
         lv = LevelBuilder.Build("#######\n#.....#\n#.....#\n#0.>..#\n#.....#\n#.....#\n#######\n---\n> 3 3 45\n", "test");
         var b = lv.balls[0];
         PoolPhysics.Shoot(b, Vector3.right, 6, 0, 0.4f);
-        PoolPhysics.Simulate(lv, 0.27f);
+        for (int i = 0; i < 100 && b.v.z < 1; i++) PoolPhysics.Simulate(lv, 0.005f); // until pushed at the center
         var dir = new Vector3(b.v.x, 0, b.v.z).normalized;
         Assert.Greater(Vector3.Dot(dir, LevelBuilder.AngleDir(45)), 0.97f);
     }
@@ -301,7 +301,7 @@ public class PhysicsTests
         Make("#0.8.....................................#");
         PoolPhysics.Shoot(lv.balls[0], Vector3.right, 8, 0.5f, 0);
         lv.balls[0].v = Vector3.right * 8; // no squirt: isolate the throw
-        PoolPhysics.Simulate(lv, 0.15f);
+        PoolPhysics.Simulate(lv, 0.35f); // stun, sliding: contact at ~0.26 s
         Assert.Greater(lv.balls[1].v.z, 0.05f);
     }
 

@@ -21,7 +21,7 @@ public class ModuleTests
         return s;
     }
 
-    [TearDown] public void Clean() => Object.DestroyImmediate(lv.root.gameObject);
+    [TearDown] public void Clean() { if (lv?.root) Object.DestroyImmediate(lv.root.gameObject); lv = null; } // pure-logic tests build no level
 
     [Test] public void DiagRail_TurnsTheBallNinetyDegrees()
     {
@@ -29,7 +29,7 @@ public class ModuleTests
         var b = lv.balls[0];
         PoolPhysics.Shoot(b, Vector3.right, 4, 0, 0);
         bool turned = false;
-        for (int i = 0; i < 100; i++)
+        for (int i = 0; i < 200; i++) // stun slows to 5/7: the rail is reached at ~1.05 s
         {
             PoolPhysics.Simulate(lv, 0.01f);
             var p = b.transform.position;

@@ -29,6 +29,7 @@ public class LevelEditorWindow : EditorWindow
         new("Sponda diag. (R)", LevelBuilder.DiagRail, new Color(0.75f, 0.45f, 0.25f)),
         new("Buca", 'O', new Color(0.25f, 0.25f, 0.25f)),
         new("Bianca", '0', Color.white),
+        new("Grigia", '*', new Color(0.55f, 0.55f, 0.57f)), // grey balls: as many as you like (BallArt.Grey)
         new("Triangolo", 'R', new Color(1f, 0.85f, 0.3f)),
         new("Blocco", 'P', new Color(0.6f, 0.55f, 0.7f)),
         new("Spine", 'X', new Color(1f, 0.3f, 0.3f)),
@@ -188,7 +189,7 @@ public class LevelEditorWindow : EditorWindow
     {
         // previews leaked by a previous script reload
         foreach (var go in Resources.FindObjectsOfTypeAll<GameObject>())
-            if (go.name == PreviewName && go.transform.parent == null && !EditorUtility.IsPersistent(go)) DestroyImmediate(go);
+            if (go.name == PreviewName && go.transform.parent == null && !EditorUtility.IsPersistent(go)) { Deselect(go); DestroyImmediate(go); }
 
         if (draft != null) SetText(draft, draftMin);
         else Load(level);
@@ -493,6 +494,8 @@ public class LevelEditorWindow : EditorWindow
         bool rack = all.Contains('R');
         foreach (var g in all.Where(c => BallChars.IndexOf(c) >= 0).GroupBy(c => c))
             if (g.Count() > 1 || rack) yield return $"Palla {System.Convert.ToInt32(g.Key.ToString(), 16)} presente più di una volta" + (rack ? " (il triangolo le contiene già)" : "");
+        int goal = Worlds.BallOf(level);
+        if (!EditingPiece && !rack && !all.Contains(BallChars[goal - 1])) yield return $"Manca la palla del livello: la {goal} (obiettivo da mandare in buca).";
         if (!cells.Values.Contains('O')) yield return "Nessuna buca.";
         if (cells.Values.Contains(LevelBuilder.PortalBlue) != cells.Values.Contains(LevelBuilder.PortalOrange)) yield return "Portale senza il suo compagno: servono il blu e l'arancione.";
         if (cells.Values.Contains('G') && !cells.Values.Contains('K')) yield return "Cancello senza pulsante: resta sempre chiuso.";
@@ -595,7 +598,19 @@ public class LevelEditorWindow : EditorWindow
         var f0 = new Dictionary<Vector2Int, int>(floors);
         bool wasGhost = hoverChanges;
         hoverChanges = Apply(small);
-        if (hoverChanges) Rebuild();
+        var lv = hoverChanges ? Rebuild() : null;
+        // a ball exists once, so the brush takes it off its old spot: keep it visible there until the click
+        if (lv != null && small)
+            foreach (var o in o0.Where(o => o.Value == brush && !objects.ContainsKey(o.Key)))
+            {
+                int n = ("0" + BallChars).IndexOf(o.Value);
+                if (n < 0) continue; // the rack is not a ball
+                var q = new Vector3(o.Key.x, 0, o.Key.y) / LevelBuilder.Sub;
+                q.y = (lv.GroundAt(q - lv.root.position) ?? 0) + Ball.Radius;
+                var old = LevelBuilder.SpawnBall(n, q, null).gameObject;
+                old.transform.SetParent(lv.root, true);
+                foreach (var t in old.GetComponentsInChildren<Transform>(true)) t.gameObject.hideFlags = HideFlags.DontSave | HideFlags.NotEditable;
+            }
         cells = c0;
         objects = o0;
         angles = a0;
@@ -647,7 +662,7 @@ public class LevelEditorWindow : EditorWindow
     {
         if (objects.TryGetValue(sub, out var old) && old == c) return false;
         // overlapping objects make way; balls and the rack exist once, so placing one moves it
-        RemoveObjects(o => Dist(o.Key, sub) < 2 * Ball.Radius - 1e-3f || o.Value == c);
+        RemoveObjects(o => Dist(o.Key, sub) < 2 * Ball.Radius - 1e-3f || (o.Value == c && c != '*'));
         objects[sub] = c;
         return true;
     }
@@ -720,21 +735,30 @@ public class LevelEditorWindow : EditorWindow
         Repaint();
     }
 
-    void Rebuild()
+    LevelBuilder.Level Rebuild()
     {
         DestroyPreview();
-        if (EditorApplication.isPlayingOrWillChangePlaymode || cells.Count == 0) return;
+        if (EditorApplication.isPlayingOrWillChangePlaymode || cells.Count == 0) return null;
         LevelBuilder.SetTheme(Worlds.ThemeOf(Worlds.WorldOf(level)));
         var lv = LevelBuilder.Build(GetText(out var min), PreviewName);
         lv.root.position = new Vector3(min.x, 0, min.y);
         foreach (var t in lv.root.GetComponentsInChildren<Transform>(true))
             t.gameObject.hideFlags = HideFlags.DontSave | HideFlags.NotEditable;
         preview = lv.root.gameObject;
+        return lv;
     }
 
     void DestroyPreview()
     {
-        if (preview) DestroyImmediate(preview);
+        if (!preview) return;
+        Deselect(preview);
+        DestroyImmediate(preview);
+    }
+
+    // a selected preview piece destroyed under the Inspector throws SerializedObjectNotCreatableException
+    static void Deselect(GameObject root)
+    {
+        if (Selection.transforms.Any(t => t && t.IsChildOf(root.transform))) Selection.activeObject = null;
     }
 
     void Load(int i)

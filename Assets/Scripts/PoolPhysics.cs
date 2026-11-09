@@ -209,7 +209,7 @@ public static class PoolPhysics
     static void Potted(Ball b, Vector3 p)
     {
         Sfx.Play(Sfx.Kind.Pocket, 0.5f + b.v.magnitude / 10);
-        Juice.Pot(p, BallArt.ColorOf(b.number));
+        Juice.Pot(p, b.number);
     }
 
     // predict: resting balls are skipped until something hits them (the aim guide re-runs this 20 times a second)
@@ -230,8 +230,11 @@ public static class PoolPhysics
                 float launch = RampLaunch(lv, b, p);
                 if (ground == null)
                 {
-                    b.falling = true;
                     b.pocket = lv.PocketAt(p);
+                    // off an edge it flies for a moment, so a fast ball bridges a gap of a few hundredths,
+                    // e.g. a platform not quite at the end of its run
+                    if (b.pocket == null) b.airborne = true;
+                    else b.falling = true;
                     if (!predict && b.pocket != null) Potted(b, p);
                     b.v.y = launch;
                 }
@@ -261,7 +264,7 @@ public static class PoolPhysics
                     if (!predict) Sfx.Play(Sfx.Kind.Land, -b.v.y / 8);
                     b.v.y = 0;
                 }
-                else if (ground == null && p.y <= R)
+                else if (ground == null && p.y <= R - 0.03f) // just below the floor-0 felt (~0.03 s off an edge): a 1-tile gap needs > 30 u/s
                 {
                     b.airborne = false;
                     b.falling = true;
@@ -362,7 +365,7 @@ public static class PoolPhysics
             if (!predict)
             {
                 Sfx.Play(Sfx.Kind.Spikes, 1);
-                Juice.Shatter(p, b.v, p.y - R, BallArt.ColorOf(b.number));
+                Juice.Shatter(p, b.v, p.y - R, b.number);
                 Juice.Punch(lv, c, new Vector3(1.1f, 1.3f, 1.1f));
             }
             b.v = b.w = Vector3.zero;

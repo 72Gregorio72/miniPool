@@ -299,6 +299,7 @@ public partial class MultiplayerGame : MonoBehaviour
         GameManager.ApplyTheme(Worlds.Level(tableSkin, 1)); // the host's table skin = that world's colors
         shownText = text ?? levelText;
         level = LevelBuilder.Build(shownText, "Multiplayer");
+        LevelBuilder.Room(level);
     }
 
     // start spot of player slot i of n: on the circle around the 8 through the level's cue spot, mirrored left/right of the

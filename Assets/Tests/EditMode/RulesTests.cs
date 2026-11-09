@@ -43,6 +43,14 @@ public class RulesTests
         Assert.IsTrue(Eval(2, None, new[] { 0 }).restart, "cue off the table / spikes");
     }
 
+    [Test] public void LevelBall_IsTheTarget()
+    {
+        Assert.IsTrue(Rules.Evaluate(BallArt.Grey, new[] { 3 }, None, target: 3).win, "level ball potted, first hit a grey ball");
+        Assert.IsFalse(Rules.Evaluate(3, new[] { 8 }, None, target: 3).win, "the 8 is just another ball here");
+        Assert.IsTrue(Rules.Evaluate(1, None, new[] { 3 }, target: 3).restart, "level ball lost");
+        Assert.IsFalse(Rules.Evaluate(BallArt.Grey, new[] { BallArt.Grey }, new[] { BallArt.Grey }, target: 3).restart, "grey balls can go anywhere");
+    }
+
     [Test] public void Multiplayer_NoBallHit_IsFine()
     {
         var o = Rules.Evaluate(-1, None, None, noHitOk: true);
