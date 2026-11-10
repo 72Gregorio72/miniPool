@@ -16,8 +16,8 @@ public partial class GameUI
 
     // ---------- the user's levels ----------
 
-    public void ShowMyLevels(List<string> names, Action create, Action<string> edit, Action<string> play, Action<string> export, Action<string> delete,
-        Action import, Action folder, Action back)
+    public void ShowMyLevels(List<string> names, Action create, Action<string> edit, Action<string> play, Action<string> duplicate, Action<string> export,
+        Action<string> delete, Action import, Action folder, Action back)
     {
         Hide();
         screen = Page.MyLevels;
@@ -31,9 +31,7 @@ public partial class GameUI
 
         var c = Corner(full, new Vector2(0.5f, 0.5f));
         var accent = Worlds.ThemeOf(0).accent;
-        Btn(c, "Nuovo livello", accent, Ink, new Vector2(-380, 300), new Vector2(360, 84), create, round);
-        Btn(c, "Importa file", Glass, White, new Vector2(0, 300), new Vector2(360, 84), import, round);
-        Btn(c, "Apri cartella", Glass, White, new Vector2(380, 300), new Vector2(360, 84), folder, round);
+        Bar(c, new Vector2(0, 300), new Vector2(360, 84), 20, ("Nuovo livello", accent, Ink, create), ("Importa file", Glass, White, import), ("Apri cartella", Glass, White, folder));
 
         int pages = Mathf.Max(1, (names.Count + LevelsPerPage - 1) / LevelsPerPage);
         myLevelsPage = Mathf.Clamp(myLevelsPage, 0, pages - 1);
@@ -46,25 +44,24 @@ public partial class GameUI
             float y = 180 - i * 96;
             var row = Box(c, Tile, new Vector2(0, y), new Vector2(1500, 84));
             Label(row, n, 34, White, new Vector2(-720, 0), new Vector2(560, 84), TextAnchor.MiddleLeft, true);
-            Btn(row, "Modifica", accent, Ink, new Vector2(110, 0), new Vector2(190, 64), () => edit(n), round);
-            Btn(row, "Gioca", Glass, White, new Vector2(310, 0), new Vector2(190, 64), () => play(n), round);
-            Btn(row, "Esporta", Glass, White, new Vector2(510, 0), new Vector2(190, 64), () => export(n), round);
             Button del = null;
             bool armed = false;
-            del = Btn(row, "Elimina", Glass, White, new Vector2(670, 0), new Vector2(110, 64), () =>
-            {
-                if (armed) { delete(n); return; }
-                armed = true; // second click deletes
-                del.GetComponentInChildren<Text>().text = "Sicuro?";
-            }, round);
+            del = Bar(row, new Vector2(296, 0), new Vector2(170, 64), 12, ("Modifica", accent, Ink, () => edit(n)), ("Gioca", Glass, White, () => play(n)),
+                ("Duplica", Glass, White, () => duplicate(n)), ("Esporta", Glass, White, () => export(n)), ("Elimina", Glass, White, () =>
+                {
+                    if (armed) { delete(n); return; }
+                    armed = true; // second click deletes
+                    del.GetComponentInChildren<Text>().text = "Sicuro?";
+                }))[4];
             del.GetComponentInChildren<Text>().fontSize = 22;
         }
         if (pages > 1)
         {
             float by = 180 - LevelsPerPage * 96 + 10;
-            if (myLevelsPage > 0) ArrowButton(c, "‹", new Vector2(-120, by), () => { myLevelsPage--; ShowMyLevels(names, create, edit, play, export, delete, import, folder, back); });
+            void Turn(int d) { myLevelsPage += d; ShowMyLevels(names, create, edit, play, duplicate, export, delete, import, folder, back); }
+            if (myLevelsPage > 0) ArrowButton(c, "‹", new Vector2(-120, by), () => Turn(-1));
             Label(c, $"{myLevelsPage + 1} / {pages}", 30, White, new Vector2(0, by), new Vector2(200, 50), bold: true, shadow: true);
-            if (myLevelsPage < pages - 1) ArrowButton(c, "›", new Vector2(120, by), () => { myLevelsPage++; ShowMyLevels(names, create, edit, play, export, delete, import, folder, back); });
+            if (myLevelsPage < pages - 1) ArrowButton(c, "›", new Vector2(120, by), () => Turn(1));
         }
         Label(Corner(full, new Vector2(0.5f, 0)), "Nei tuoi livelli l'obiettivo è mandare in buca la 8.   Cartella: " + LevelEditor.Dir, 22,
             new Color(1, 1, 1, 0.6f), new Vector2(0, 40), new Vector2(1800, 36), shadow: true);
@@ -89,15 +86,12 @@ public partial class GameUI
         var warnings = e.Warnings.Take(3).ToList();
         for (int i = 0; i < warnings.Count; i++)
             Label(tl, "⚠ " + warnings[i], 24, Warn, new Vector2(30, -115 - i * 34), new Vector2(1100, 34), TextAnchor.MiddleLeft, true, true);
+        Label(tl, LevelDraft.HelpOf(e.brush), 22, new Color(1, 1, 1, 0.8f), new Vector2(30, -115 - warnings.Count * 34), new Vector2(1300, 34), TextAnchor.MiddleLeft, false, true);
 
         var tr = Corner(full, new Vector2(1, 1));
-        var right = new (string, Action, bool)[] { ("Esci", e.Exit, false), ("Livello…", e.Settings, false), ("Esporta", e.ExportCurrent, false), ("Salva", () => e.Save(), false), ("▶ Prova", e.Playtest, true) };
-        for (int i = 0; i < right.Length; i++)
-        {
-            var (s, a, main) = right[i];
-            var b = Btn(tr, s, main ? accent : Glass, main ? Ink : White, new Vector2(-105 - i * 190, -55), new Vector2(176, 64), a, round);
+        foreach (var b in Bar(tr, new Vector2(-485, -55), new Vector2(176, 64), 14, ("▶ Prova", accent, Ink, e.Playtest), ("Salva", Glass, White, () => e.Save()),
+            ("Esporta", Glass, White, e.ExportCurrent), ("Livello…", Glass, White, e.Settings), ("Esci", Glass, White, e.Exit)))
             b.GetComponentInChildren<Text>().fontSize = 24;
-        }
 
         // bottom panel
         var strip = Rect(full, Vector2.zero, Vector2.one);
@@ -110,8 +104,8 @@ public partial class GameUI
         bg.color = Panel;
         bg.raycastTarget = true; // clicks on the panel don't paint the table under it
         var bc = Corner(full, new Vector2(0.5f, 0));
-        Label(bc, "Sinistro disegna · Shift+trascina rettangolo · Ctrl+clic cancella · Destro trascina sposta la vista · Rotella zoom · Rotella premuta o Alt+sinistro gira · " +
-            "R/Q ruota · PagSu/PagGiù piano · T dall'alto · Home inquadra · 1/2/3 schede · Ctrl+Z/Y", 20, new Color(1, 1, 1, 0.75f), new Vector2(0, 322), new Vector2(1880, 30), shadow: true);
+        Label(bc, "Sinistro disegna · Shift+trascina rettangolo · Ctrl+clic cancella · P pipetta · Destro trascina sposta la vista · Rotella zoom · Rotella premuta o Alt+sinistro gira · " +
+            "R/Q ruota (anche il pezzo in mano) · PagSu/PagGiù piano · T dall'alto · Home inquadra · 1/2/3 schede · Ctrl+Z/Y", 20, new Color(1, 1, 1, 0.75f), new Vector2(0, 322), new Vector2(1880, 30), shadow: true);
 
         var tabs = new[] { ("Costruisci", LevelEditor.Tab.Build), ("Modifica", LevelEditor.Tab.Edit), ("Elimina", LevelEditor.Tab.Delete) };
         for (int i = 0; i < tabs.Length; i++)
@@ -128,7 +122,7 @@ public partial class GameUI
         // right column: floor, rotation, stacking
         Stepper(bc, "Piano", e.floor.ToString(), new Vector2(760, 240), d => e.ChangeFloor(d));
         bool oriented = LevelBuilder.IsOriented(e.brush);
-        Stepper(bc, "Rotazione", oriented ? $"{e.SnappedAngle}°" : "—", new Vector2(760, 150), d => e.Rotate(d * LevelDraft.RotateStep));
+        Stepper(bc, "Rotazione", oriented ? $"{e.SnappedAngle}°" : e.TurningClip ? "pezzo" : "—", new Vector2(760, 150), d => e.Rotate(d * (e.TurningClip ? 90 : LevelDraft.RotateStep)));
         SmallBtn(bc, e.stack ? "Sovrapposizione: sì" : "Sovrapposizione: no", new Vector2(760, 60), new Vector2(300, 64), e.ToggleStack)
             .GetComponent<Image>().color = e.stack ? accent : Glass;
     }
@@ -188,7 +182,7 @@ public partial class GameUI
             .horizontalOverflow = HorizontalWrapMode.Wrap; // stays inside the panel
         SmallBtn(bc, "↺ 90°", new Vector2(-610, 45), new Vector2(160, 64), () => e.Rotate(-90));
         SmallBtn(bc, "↻ 90°", new Vector2(-440, 45), new Vector2(160, 64), () => e.Rotate(90));
-        Label(bc, "Ruota il pennello (spinte, rampe, portali, nastri, ventilatori…)", 22, new Color(1, 1, 1, 0.75f), new Vector2(-340, 45), new Vector2(900, 40), TextAnchor.MiddleLeft);
+        Label(bc, e.TurningClip ? "Ruota il pezzo in mano (R / Q)" : "Ruota il pennello (spinte, rampe, portali, nastri, ventilatori…)", 22, new Color(1, 1, 1, 0.75f), new Vector2(-340, 45), new Vector2(900, 40), TextAnchor.MiddleLeft);
     }
 
     void DeleteTools(Transform bc, LevelEditor e, Color accent)

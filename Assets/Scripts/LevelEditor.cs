@@ -1,4 +1,3 @@
-using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -54,7 +53,9 @@ public class LevelEditor : MonoBehaviour
     Vector2Int? rectStart;
     bool hit, erase, stroke, strokeSaved;
     (Vector2Int, Vector2Int) lastPaint;
-    string hoverKey;
+    string hoverKey, pendingKey; // pendingKey: the hover not yet shown, waiting HoverDelay since it last changed
+    float pendingAt;
+    const float HoverDelay = 0.05f;
     bool ghost;  // the preview shows the brush applied under the mouse
     int version; // bumped at every change: the hover preview is rebuilt
 
@@ -70,7 +71,16 @@ public class LevelEditor : MonoBehaviour
     // ---------- list of the user's levels ----------
 
     /// <summary>"Crea livelli": the user's levels (new, edit, play, export, delete, import).</summary>
-    public void ShowList() => ui.ShowMyLevels(Names(), () => Open(null), Open, PlayFromList, ExportFile, Delete, Import, OpenFolder, ui.ShowHome);
+    public void ShowList() => ui.ShowMyLevels(Names(), () => Open(null), Open, PlayFromList, Duplicate, ExportFile, Delete, Import, OpenFolder, ui.ShowHome);
+
+    void Duplicate(string name)
+    {
+        var text = Read(name);
+        if (text == null) return;
+        try { File.WriteAllText(PathOf(Unique(name)), text); }
+        catch (IOException e) { ui.Toast("Non riesco a copiarlo: " + e.Message); }
+        ShowList();
+    }
 
     void PlayFromList(string name)
     {
@@ -168,10 +178,10 @@ public class LevelEditor : MonoBehaviour
         d.SetText(text, Vector2Int.zero);
         tab = Tab.Build;
         brush = buildBrush;
+        if (!icons.Values.Any(t => t)) MakeIcons(); // once (the textures die when Play ends without a domain reload)
         game.EnterEditor();
         Begin();
         Frame();
-        if (icons.Count == 0) StartCoroutine(MakeIcons());
     }
 
     void Begin()
@@ -246,10 +256,33 @@ public class LevelEditor : MonoBehaviour
         ShowHud();
     }
 
+    /// <summary>Turns the brush; with a piece in hand (Sposta / Copia), the piece turns instead, by 90°.</summary>
     public void Rotate(int degrees)
     {
-        angle = ((angle + degrees) % 360 + 360) % 360;
+        if (TurningClip) d.RotateClip(degrees / 90);
+        else angle = ((angle + degrees) % 360 + 360) % 360;
         ShowHud();
+    }
+
+    public bool TurningClip => IsToolBrush && d.clip != null;
+
+    /// <summary>Pipetta (P): the brush, angle and floor of what's under the mouse (a ball, the top of a pile, the tile).</summary>
+    void Pick()
+    {
+        if (!hit) return;
+        int a = angle;
+        char c = d.objects.FirstOrDefault(o => LevelDraft.Dist(o.Key, sub) < 0.4f).Value;
+        if (c == default)
+        {
+            if (!d.cells.TryGetValue(cell, out c)) return;
+            if (d.above.TryGetValue(cell, out var pile) && pile.Count > 0) (c, a) = pile[^1];
+            else a = d.angles.GetValueOrDefault(cell, angle);
+            floor = d.floors.GetValueOrDefault(cell);
+        }
+        if (LevelBuilder.IsOriented(c)) angle = a;
+        tab = Tab.Build;
+        category = LevelDraft.Brushes.Where(b => b.c == c).Select(b => b.category).DefaultIfEmpty(1).First(); // the numbered balls aren't in Brushes
+        SetBrush(c);
     }
 
     public void ChangeFloor(int delta)
@@ -305,7 +338,8 @@ public class LevelEditor : MonoBehaviour
     public bool Save()
     {
         var name = Clean(editName);
-        if (name != levelName && File.Exists(PathOf(name)))
+        bool renamed = levelName != null && levelName != name;
+        if (!string.Equals(name, levelName, System.StringComparison.OrdinalIgnoreCase) && File.Exists(PathOf(name)))
         {
             ui.Toast($"Esiste già un livello che si chiama \"{name}\"");
             return false;
@@ -313,8 +347,8 @@ public class LevelEditor : MonoBehaviour
         try
         {
             Directory.CreateDirectory(Dir);
+            if (renamed && File.Exists(PathOf(levelName))) File.Move(PathOf(levelName), PathOf(name)); // a move keeps a case-only rename too
             File.WriteAllText(PathOf(name), d.GetText(out _));
-            if (levelName != null && levelName != name) File.Delete(PathOf(levelName));
         }
         catch (IOException e)
         {
@@ -406,11 +440,13 @@ public class LevelEditor : MonoBehaviour
         if (kb.digit1Key.wasPressedThisFrame) SelectTab(Tab.Build);
         if (kb.digit2Key.wasPressedThisFrame) SelectTab(Tab.Edit);
         if (kb.digit3Key.wasPressedThisFrame) SelectTab(Tab.Delete);
-        if (LevelBuilder.IsOriented(brush) && !ctrl)
+        if ((LevelBuilder.IsOriented(brush) || TurningClip) && !ctrl)
         {
-            if (kb.rKey.wasPressedThisFrame || kb.eKey.wasPressedThisFrame) Rotate(shift ? -LevelDraft.RotateStep : LevelDraft.RotateStep);
-            if (kb.qKey.wasPressedThisFrame) Rotate(-LevelDraft.RotateStep);
+            int step = TurningClip ? 90 : LevelDraft.RotateStep;
+            if (kb.rKey.wasPressedThisFrame || kb.eKey.wasPressedThisFrame) Rotate(shift ? -step : step);
+            if (kb.qKey.wasPressedThisFrame) Rotate(-step);
         }
+        if (kb.pKey.wasPressedThisFrame) Pick();
         if (kb.pageUpKey.wasPressedThisFrame) ChangeFloor(1);
         if (kb.pageDownKey.wasPressedThisFrame) ChangeFloor(-1);
         if (kb.tKey.wasPressedThisFrame) pitch = pitch > 85 ? 55 : 89.9f;
@@ -541,6 +577,9 @@ public class LevelEditor : MonoBehaviour
         var key = hit ? $"{(small ? sub : cell)} {rectStart} {brush} {angle} {floor} {stack} {erase} {version} {d.clip?.GetHashCode()}" : null;
         Box();
         if (key == hoverKey) return;
+        // shortcut: the preview rebuilds the whole level, so it waits for the mouse to settle instead of chasing every cell; rebuild only the touched chunk if big levels still stutter
+        if (key != pendingKey) { pendingKey = key; pendingAt = Time.unscaledTime; }
+        if (key != null && Time.unscaledTime - pendingAt < HoverDelay) return;
         hoverKey = key;
         if (!hit)
         {
@@ -651,44 +690,42 @@ public class LevelEditor : MonoBehaviour
 
     // ---------- brush icons ----------
 
-    static readonly Dictionary<char, Texture> icons = new();
+    public static readonly Dictionary<char, Texture> icons = new(); // by brush char; EditorIconTests saves them as evidence
 
     /// <summary>3D thumbnail of a brush (null until MakeIcons has rendered it).</summary>
-    public static Texture Icon(char c) => icons.TryGetValue(c, out var t) ? t : null;
+    public static Texture Icon(char c) => icons.TryGetValue(c, out var t) && t ? t : null;
 
-    // every brush built far away as a 3x3 felt patch with the tile in the middle, a camera on each for one frame
-    IEnumerator MakeIcons()
+    /// <summary>Renders every brush (a 3x3 felt patch with the tile in the middle, built far away) into its icon texture, now.</summary>
+    public static void MakeIcons()
     {
-        var chars = LevelDraft.Brushes.Select(b => b.c).Concat(LevelDraft.BallChars).Where(c => c != ' ').Distinct().ToList();
-        var made = new List<(GameObject level, Camera cam)>();
-        for (int i = 0; i < chars.Count; i++)
+        var cam = new GameObject("BrushIconCam").AddComponent<Camera>();
+        cam.fieldOfView = 30;
+        cam.nearClipPlane = 0.1f;
+        cam.farClipPlane = 20;
+        cam.clearFlags = CameraClearFlags.SolidColor;
+        cam.backgroundColor = new Color(0.18f, 0.19f, 0.23f);
+#if UNITY_EDITOR
+        bool async = UnityEditor.ShaderUtil.allowAsyncCompilation;
+        UnityEditor.ShaderUtil.allowAsyncCompilation = false; // or a shader still compiling renders as a placeholder
+#endif
+        var at = new Vector3(-3000, 0, -3000); // far from the table
+        foreach (char c in LevelDraft.Brushes.Select(b => b.c).Concat(LevelDraft.BallChars).Where(c => c != ' ').Distinct())
         {
-            char c = chars[i];
             var text = c == LevelBuilder.FeltWithRails ? "###\n#.#\n###" : LevelBuilder.IsOriented(c) ? $"...\n.{c}.\n...\n---\n> 1 1 90" : $"...\n.{c}.\n...";
             var lv = LevelBuilder.Build(text, "BrushIcon");
-            var at = new Vector3(-3000 - i * 30, 0, -3000);
             lv.root.position = at;
-            var rt = new RenderTexture(160, 160, 24) { antiAliasing = 2 };
-            var cam = new GameObject("BrushIconCam").AddComponent<Camera>();
-            cam.targetTexture = rt;
-            cam.fieldOfView = 30;
-            cam.nearClipPlane = 0.1f;
-            cam.farClipPlane = 20;
-            cam.clearFlags = CameraClearFlags.SolidColor;
-            cam.backgroundColor = new Color(0.18f, 0.19f, 0.23f);
             var look = at + new Vector3(1, 0.1f, 1);
             cam.transform.position = look + new Vector3(0, 3.2f, -3.2f) * (c == 'R' ? 1.8f : 1f);
             cam.transform.LookAt(look);
-            icons[c] = rt;
-            made.Add((lv.root.gameObject, cam));
+            cam.targetTexture = new RenderTexture(160, 160, 24) { antiAliasing = 2 };
+            cam.Render();
+            icons[c] = cam.targetTexture;
+            Object.DestroyImmediate(lv.root.gameObject);
         }
-        yield return null;
-        yield return null; // rendered at the end of the first frame
-        foreach (var (level, cam) in made)
-        {
-            Destroy(level);
-            Destroy(cam.gameObject);
-        }
-        if (enabled && !modal) ShowHud();
+#if UNITY_EDITOR
+        UnityEditor.ShaderUtil.allowAsyncCompilation = async;
+#endif
+        cam.targetTexture = null; // destroyed with its target still attached, the last render came out black
+        Object.DestroyImmediate(cam.gameObject);
     }
 }

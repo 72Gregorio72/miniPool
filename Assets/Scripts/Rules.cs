@@ -41,6 +41,29 @@ public static class Rules
         return o;
     }
 
+    // ---------- single-player run (GameManager) ----------
+
+    // Shots, attempts and forgiven fouls of one level; pure, so the restart / forgiven foul / win flow is tested in RulesTests.
+    public class Run
+    {
+        public int attempts, shots, fouls, foulsLeft; // fouls = the level's "falli" line; foulsLeft = left in this attempt
+        public enum End { Restart, Forgiven, Continue, Win }
+
+        // a (re)start of the level: a new attempt, shots and fouls from scratch
+        public void Begin(int fouls) { attempts++; shots = 0; foulsLeft = this.fouls = fouls; }
+        public void Shot() => shots++;
+
+        // the shot is over. Restart = a foul with no fouls left; Forgiven = a foul paid with one (the cue and the target go back to their start)
+        public End EndShot(int firstHit, IReadOnlyCollection<int> potted, IReadOnlyCollection<int> lost, int target, out string message)
+        {
+            var o = Evaluate(firstHit, potted, lost, target: target);
+            if (o.restart && SpendFoul(ref foulsLeft)) { message = o.message + $"\nFallo concesso: si continua (falli rimasti: {foulsLeft})"; return End.Forgiven; }
+            if (o.restart) { message = o.message + "\nSi ricomincia il livello"; return End.Restart; }
+            message = null;
+            return o.win ? End.Win : End.Continue;
+        }
+    }
+
     // multiplayer: the round ends when nobody is left playing, or when only one is left and someone already finished
     // (that one is last anyway, no need to pot). A player alone from the start still has to pot.
     public static bool RoundOver(int stillPlaying, int finished) => stillPlaying == 0 || (stillPlaying == 1 && finished > 0);

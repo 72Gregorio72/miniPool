@@ -1413,3 +1413,47 @@ production/session-logs/compaction-log.txt
 production/session-logs/session-log.md
 ---
 
+## Session End: 20261110_154628
+### Uncommitted Changes
+Assets/Scripts/GameUI.Editor.cs
+Assets/Scripts/LevelDraft.cs
+Assets/Scripts/LevelEditor.cs
+Assets/Tests/EditMode/LevelDraftTests.cs
+CLAUDE.md
+---
+
+## Session End: 20261110_155218
+### Uncommitted Changes
+Assets/Scripts/GameUI.Editor.cs
+Assets/Scripts/LevelDraft.cs
+Assets/Scripts/LevelEditor.cs
+Assets/Tests/EditMode/LevelDraftTests.cs
+CLAUDE.md
+TODO.md
+production/session-logs/.session-end.hash
+production/session-logs/session-log.md
+---
+
+## Session End: 20261110_160359
+### Uncommitted Changes
+Assets/Editor/LevelEditorWindow.cs
+Assets/Resources/Levels/level30.txt
+Assets/Scripts/CueController.cs
+Assets/Scripts/GameManager.cs
+Assets/Scripts/GameUI.Editor.cs
+Assets/Scripts/GameUI.cs
+Assets/Scripts/LevelBuilder.cs
+Assets/Scripts/LevelDraft.cs
+Assets/Scripts/LevelEditor.cs
+Assets/Scripts/MultiplayerGame.cs
+Assets/Scripts/PoolPhysics.cs
+Assets/Scripts/Rules.cs
+Assets/Scripts/Sfx.cs
+Assets/Tests/EditMode/LevelDraftTests.cs
+Assets/Tests/EditMode/RulesTests.cs
+CLAUDE.md
+TODO.md
+production/session-logs/.session-end.hash
+production/session-logs/session-log.md
+---
+

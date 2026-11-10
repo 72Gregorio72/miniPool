@@ -26,9 +26,9 @@ public class GameManager : MonoBehaviour
     string message;
     float shotTime;
 
-    // stats of the current level, across restarts; shots only of the current run (a restart clears them)
-    int attempts, shots;
-    int fouls, foulsLeft; // the level's "falli" line; left in this run (a restart gives them all back)
+    // shots, attempts and fouls of the current level (Rules.Run: a restart clears shots and gives the fouls back)
+    readonly Rules.Run run = new();
+    int par; // the level's "tiri" line, read once at load (HUD)
     readonly Dictionary<int, Vector3> startSpot = new(); // cue and level ball where the level starts them (back there after a forgiven foul)
     float levelStart;
 
@@ -61,27 +61,27 @@ public class GameManager : MonoBehaviour
     public static int TableSkin
     {
         get => Mathf.Clamp(PlayerPrefs.GetInt("MiniPool.table", 0), 0, Worlds.Themes.Length - 1);
-        set => PlayerPrefs.SetInt("MiniPool.table", value);
+        set { PlayerPrefs.SetInt("MiniPool.table", value); PlayerPrefs.Save(); } // saved at once: a crash must not lose a setting
     }
 
     // hard mode: no cue ball aim line in the levels
     public static bool HardMode
     {
         get => PlayerPrefs.GetInt("MiniPool.hard", 0) == 1;
-        set => PlayerPrefs.SetInt("MiniPool.hard", value ? 1 : 0);
+        set { PlayerPrefs.SetInt("MiniPool.hard", value ? 1 : 0); PlayerPrefs.Save(); }
     }
 
     // settings screen: master volume 0..1 and camera mouse sensitivity (multiplier)
     public static float Volume
     {
         get => PlayerPrefs.GetFloat("MiniPool.volume", 1);
-        set { PlayerPrefs.SetFloat("MiniPool.volume", value); AudioListener.volume = value; }
+        set { PlayerPrefs.SetFloat("MiniPool.volume", value); PlayerPrefs.Save(); AudioListener.volume = value; }
     }
 
     public static float Sensitivity
     {
         get => PlayerPrefs.GetFloat("MiniPool.sensitivity", 1);
-        set => PlayerPrefs.SetFloat("MiniPool.sensitivity", value);
+        set { PlayerPrefs.SetFloat("MiniPool.sensitivity", value); PlayerPrefs.Save(); }
     }
 
     bool paused;
@@ -97,6 +97,7 @@ public class GameManager : MonoBehaviour
         cueCtl = gameObject.AddComponent<CueController>();
         cueCtl.onShot = OnShot;
         ui = gameObject.AddComponent<GameUI>();
+        cueCtl.ui = ui;
         ui.onPlay = StartLevel;
         ui.onMenu = ShowMenu;
         ui.onSelect = Preview;
@@ -190,7 +191,7 @@ public class GameManager : MonoBehaviour
     // fresh start of a level (from the menu or "next"); Load alone is a restart that counts as a new attempt
     void StartLevel(int index)
     {
-        attempts = 0;
+        run.attempts = 0;
         levelStart = Time.time;
         Load(index);
     }
@@ -222,9 +223,8 @@ public class GameManager : MonoBehaviour
         cueCtl.level = level;
         cueCtl.guide = !HardMode;
         cueCtl.guideHit = false; // only the cue ball's line
-        attempts++;
-        shots = 0;
-        foulsLeft = fouls = LevelBuilder.FoulsOf(text);
+        run.Begin(LevelBuilder.FoulsOf(text));
+        par = LevelBuilder.ParOf(text);
         startSpot.Clear();
         foreach (var b in level.balls)
             if (b.number == 0 || b.number == Goal) startSpot[b.number] = b.transform.position;
@@ -309,7 +309,7 @@ public class GameManager : MonoBehaviour
     void OnShot()
     {
         firstHit = -1;
-        shots++;
+        run.Shot();
         potted.Clear();
         lost.Clear();
         shotTime = Time.time;
@@ -319,6 +319,7 @@ public class GameManager : MonoBehaviour
     void Update()
     {
         ui.SetHint(state == State.Aiming && !paused && !(cueCtl.orbit && cueCtl.orbit.Free) ? Hint() : null);
+        Hud();
         if (state is State.Multiplayer or State.Editor) return; // MultiplayerGame / LevelEditor drive
         if (state == State.Menu) { PreviewCamera(); return; }
         var kb = Keyboard.current;
@@ -368,20 +369,18 @@ public class GameManager : MonoBehaviour
 
     void EndShot()
     {
-        var o = Rules.Evaluate(firstHit, potted, lost, target: Goal);
-        bool forgiven = o.restart && Rules.SpendFoul(ref foulsLeft);
-        if (o.restart && !forgiven)
+        var end = run.EndShot(firstHit, potted, lost, Goal, out string msg);
+        if (end == Rules.Run.End.Restart)
         {
             Sfx.Play(Sfx.Kind.Fail, 1);
             Load(levelIndex);
-            message = o.message + "\nSi ricomincia il livello";
+            message = msg;
             return;
         }
-        message = null;
-        if (forgiven) // the run goes on from here; without the cue or the level ball it couldn't
+        message = msg;
+        if (end == Rules.Run.End.Forgiven) // the run goes on from here; without the cue or the level ball it couldn't
         {
             Sfx.Play(Sfx.Kind.Fail, 1);
-            message = o.message + $"\nFallo concesso: si continua (falli rimasti: {foulsLeft})";
             foreach (var b in level.balls)
                 if (!b.gameObject.activeSelf && startSpot.TryGetValue(b.number, out var spot))
                 {
@@ -399,7 +398,7 @@ public class GameManager : MonoBehaviour
             Destroy(b.gameObject);
         }
 
-        if (o.win)
+        if (end == Rules.Run.End.Win)
         {
             Win();
             return;
@@ -410,11 +409,11 @@ public class GameManager : MonoBehaviour
     void Win()
     {
         SetState(State.GameOver);
+        int shots = run.shots, attempts = run.attempts;
         if (customText != null) // user level: no records, no unlocks
         {
-            int customPar = LevelBuilder.ParOf(customText);
-            Sfx.Play(Rules.Crown(shots, customPar) ? Sfx.Kind.Crown : Sfx.Kind.Win, 1);
-            ui.ShowCustomResults(customName, shots, customPar, attempts, Time.time - levelStart, () => StartLevel(0), ShowMenu);
+            Sfx.Play(Rules.Crown(shots, par) ? Sfx.Kind.Crown : Sfx.Kind.Win, 1);
+            ui.ShowCustomResults(customName, shots, par, attempts, Time.time - levelStart, () => StartLevel(0), ShowMenu);
             return;
         }
         bool first = !Completed(levelIndex), hadCrown = Crown(levelIndex);
@@ -432,7 +431,7 @@ public class GameManager : MonoBehaviour
         else if (first) notes.Add("Primo completamento!");
         else if (record) notes.Add("Nuovo record!");
         notes.AddRange(locked.Where(BallArt.Unlocked).Select(s => $"Nuova skin sbloccata: {BallArt.Skins[s].name}"));
-        ui.ShowResults(levelIndex, NextLevel(), shots, Par(levelIndex), attempts, Time.time - levelStart, string.Join("\n", notes));
+        ui.ShowResults(levelIndex, NextLevel(), shots, par, attempts, Time.time - levelStart, string.Join("\n", notes));
     }
 
     int NextLevel() => customText != null ? 0 : levels.FirstOrDefault(i => i > levelIndex);
@@ -448,18 +447,14 @@ public class GameManager : MonoBehaviour
         _ => null,
     };
 
-    // shortcut: IMGUI HUD for the prototype; replace with a uGUI/UI Toolkit canvas when the art pass starts.
-    void OnGUI()
+    // level, shots, fouls and the shot's message on the uGUI HUD (GameUI.SetHud, only redrawn when the text changes); hidden off the table
+    void Hud()
     {
-        if (state is State.Menu or State.Multiplayer or State.Editor || paused) return;
-        var style = new GUIStyle(GUI.skin.label) { fontSize = 22, normal = { textColor = Color.white } };
+        if (state is State.Menu or State.Multiplayer or State.Editor || paused) { ui.SetHud(null, null, null); return; }
         bool custom = customText != null;
-        int par = custom ? LevelBuilder.ParOf(customText) : Par(levelIndex); // shortcut: reads the level file every frame, fine while the HUD is IMGUI
-        GUI.Label(new Rect(16, 12, 1600, 32), $"{(custom ? customName : $"Livello {levelIndex}")}   Tiri {shots}{(par > 0 ? $" (corona: {par})" : "")}{(fouls > 0 ? $"   Falli {foulsLeft}/{fouls}" : "")}   Obiettivo: manda in buca la {Goal} (non perdere la bianca o la {Goal}, colpisci sempre una palla)", style);
-        if (!string.IsNullOrEmpty(message)) GUI.Label(new Rect(16, 44, 1200, 120), message, style);
-        style.fontSize = 16;
-        GUI.Label(new Rect(16, Screen.height - 52, 1400, 48),
+        ui.SetHud($"{(custom ? customName : $"Livello {levelIndex}")}   Tiri {run.shots}{(par > 0 ? $" (corona: {par})" : "")}{(run.fouls > 0 ? $"   Falli {run.foulsLeft}/{run.fouls}" : "")}   Obiettivo: manda in buca la {Goal} (non perdere la bianca o la {Goal}, colpisci sempre una palla)",
+            message,
             "Sinistro + mouse = gira intorno / mira (Shift = fine, frecce = ritocco, Ctrl = solo camera)   Rotella = zoom   T = vista dall'alto   F = volo libero (WASD, Q/E, Shift)\n" +
-            "Destro tenuto + mouse indietro = potenza (+ sinistro = sposta l'effetto), rilascia = tiro, Esc = annulla / pausa   R = restart   M = " + (custom ? "esci" : "menu"), style);
+            "Destro tenuto + mouse indietro = potenza (+ sinistro = sposta l'effetto), rilascia = tiro, Esc = annulla / pausa   R = restart   M = " + (custom ? "esci" : "menu"));
     }
 }

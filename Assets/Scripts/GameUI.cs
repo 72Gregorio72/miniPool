@@ -58,7 +58,10 @@ public partial class GameUI : MonoBehaviour
 
     void Awake()
     {
-        font = Font.CreateDynamicFontFromOSFont(new[] { "Segoe UI", "Helvetica Neue", "Arial" }, 32);
+        // an OS font where one of these exists (Windows / Mac); elsewhere Unity's bundled Liberation Sans, so the text never vanishes
+        var names = new[] { "Segoe UI", "Helvetica Neue", "Arial" };
+        var installed = Font.GetOSInstalledFontNames();
+        font = names.Any(installed.Contains) ? Font.CreateDynamicFontFromOSFont(names, 32) : Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
         round = RoundedSprite(64, 28);
         circle = RoundedSprite(128, 64);
         cam = Camera.main;
@@ -91,6 +94,58 @@ public partial class GameUI : MonoBehaviour
         previewStuff.Clear();
         previewCams.Clear();
         foreach (Transform c in root) if (c != toasts && c != hud) Destroy(c.gameObject);
+    }
+
+    // ---------- single-player HUD (GameManager.Hud, CueController) ----------
+
+    Text hudTop, hudMessage, hudHelp;
+    RectTransform cuePanel, cueDot, cueFill;
+    Image cueFillImg;
+    Text cueLabel;
+
+    // level / shots / fouls at the top left, the shot's message under it, the controls at the bottom left; null hides a line
+    public void SetHud(string top, string message, string help)
+    {
+        if (!hudTop)
+        {
+            var tl = Corner(hud, new Vector2(0, 1));
+            hudTop = Label(tl, "", 26, White, new Vector2(24, -36), new Vector2(1800, 40), TextAnchor.MiddleLeft, true, true);
+            hudMessage = Label(tl, "", 26, White, new Vector2(24, -100), new Vector2(1400, 120), TextAnchor.MiddleLeft, false, true);
+            hudHelp = Label(Corner(hud, Vector2.zero), "", 19, new Color(1, 1, 1, 0.75f), new Vector2(24, 44), new Vector2(1700, 60), TextAnchor.MiddleLeft, false, true);
+        }
+        SetText(hudTop, top);
+        SetText(hudMessage, message);
+        SetText(hudHelp, help);
+    }
+
+    static void SetText(Text t, string s)
+    {
+        if (t.text != (s ?? "")) t.text = s ?? "";
+        if (t.gameObject.activeSelf != (s != null)) t.gameObject.SetActive(s != null);
+    }
+
+    // bottom right: the cue ball with the tip spot (tip in ball radii, max 0.5) and elevation, the power bar beside it
+    public void SetCue(bool on, Vector2 tip, float power, float elevation)
+    {
+        const float Size = 110;
+        if (!cuePanel)
+        {
+            cuePanel = Corner(hud, new Vector2(1, 0));
+            var ball = Box(cuePanel, Glass, new Vector2(-90, 120), new Vector2(Size, Size), circle);
+            cueDot = Box(ball, White, Vector2.zero, new Vector2(16, 16), circle);
+            cueLabel = Label(cuePanel, "", 20, White, new Vector2(-120, 40), new Vector2(460, 30), shadow: true);
+            var bar = Box(cuePanel, Glass, new Vector2(-170, 120), new Vector2(20, Size));
+            cueFill = Box(bar, Color.green, Vector2.zero, new Vector2(16, 0));
+            cueFill.anchorMin = cueFill.anchorMax = cueFill.pivot = new Vector2(0.5f, 0);
+            cueFill.anchoredPosition = new Vector2(0, 2);
+            cueFillImg = cueFill.GetComponent<Image>();
+        }
+        if (cuePanel.gameObject.activeSelf != on) cuePanel.gameObject.SetActive(on);
+        if (!on) return;
+        cueDot.anchoredPosition = tip * Size;
+        cueFill.sizeDelta = new Vector2(16, (Size - 4) * power);
+        cueFillImg.color = Color.Lerp(Color.green, Color.red, power);
+        SetText(cueLabel, "Effetto: destro + sinistro   ·   " + (elevation < 0 ? $"Colpo da sotto (salto): {-elevation:0}° (W / S)" : $"Stecca alzata: {elevation:0}° (W / S)"));
     }
 
     // ---------- onboarding hint ----------
@@ -446,8 +501,9 @@ public partial class GameUI : MonoBehaviour
         Label(top, "Multiplayer", 76, White, new Vector2(90, -135), new Vector2(1000, 90), TextAnchor.MiddleLeft, true, true);
 
         var center = Corner(full, new Vector2(0.5f, 0.5f));
-        Btn(center, "Crea minigolf", Worlds.ThemeOf(0).accent, Ink, new Vector2(-290, 170), new Vector2(540, 92), () => onHost?.Invoke(), round);
-        Btn(center, "Crea biliardo (2 giocatori)", Worlds.ThemeOf(0).accent, Ink, new Vector2(290, 170), new Vector2(540, 92), () => onHostPool?.Invoke(), round);
+        Bar(center, new Vector2(0, 170), new Vector2(540, 92), 40,
+            ("Crea minigolf", Worlds.ThemeOf(0).accent, Ink, () => onHost?.Invoke()),
+            ("Crea biliardo (2 giocatori)", Worlds.ThemeOf(0).accent, Ink, () => onHostPool?.Invoke()));
         Label(center, "oppure entra con un codice", 28, new Color(1, 1, 1, 0.7f), new Vector2(0, 75), new Vector2(800, 40), shadow: true);
         var code = Input(center, "CODICE", new Vector2(-70, -10), new Vector2(420, 92));
         Btn(center, "Entra", Glass, White, new Vector2(220, -10), new Vector2(120, 92), () => onJoin?.Invoke(code.text), round);
@@ -665,19 +721,27 @@ public partial class GameUI : MonoBehaviour
 
         if (!string.IsNullOrEmpty(note)) Label(card, note, 24, RecordColor, new Vector2(0, -128), new Vector2(w, 84), bold: true);
 
-        float by = -h / 2 + 70;
         var buttons = new List<(string, Color, Color, Action)>
         {
             ("Menu", Soft, Ink, () => onMenu?.Invoke()),
             ("Rigioca", Soft, Ink, () => onPlay?.Invoke(level)),
         };
         if (next > 0) buttons.Add((Worlds.WorldOf(next) != Worlds.WorldOf(level) ? "Mondo successivo" : "Prossimo", theme.accent, Ink, () => onPlay?.Invoke(next)));
-        float bw = next > 0 ? 210 : 260, gap = 20, x0 = -(buttons.Count - 1) * (bw + gap) / 2;
-        for (int i = 0; i < buttons.Count; i++)
-        {
-            var (s, bg, fg, a) = buttons[i];
-            Btn(card, s, bg, fg, new Vector2(x0 + i * (bw + gap), by), new Vector2(bw, 76), a, round);
-        }
+        Bar(card, new Vector2(0, -h / 2 + 70), new Vector2(next > 0 ? 210 : 260, 76), 20, buttons.ToArray());
+    }
+
+    // a row of equal buttons centered on pos, laid out by uGUI (HorizontalLayoutGroup): one more button needs no new coordinates
+    Button[] Bar(Transform parent, Vector2 pos, Vector2 size, float gap, params (string label, Color bg, Color fg, Action click)[] items)
+    {
+        var row = Rect(parent, pos, new Vector2(items.Length * (size.x + gap) - gap, size.y));
+        var g = row.gameObject.AddComponent<HorizontalLayoutGroup>();
+        g.spacing = gap;
+        g.childAlignment = TextAnchor.MiddleCenter;
+        g.childControlWidth = g.childControlHeight = g.childForceExpandWidth = g.childForceExpandHeight = false; // Btn sets the size
+        var buttons = new Button[items.Length];
+        for (int i = 0; i < items.Length; i++)
+            buttons[i] = Btn(row, items[i].label, items[i].bg, items[i].fg, Vector2.zero, size, items[i].click, round);
+        return buttons;
     }
 
     // ---------- per frame ----------

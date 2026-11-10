@@ -32,6 +32,23 @@ public class RulesTests
         Assert.AreEqual(0, LevelBuilder.FoulsOf("#0#\n"));
     }
 
+    [Test] public void Run_ForgivenFoul_ThenRestart_ThenWin()
+    {
+        var run = new Rules.Run();
+        run.Begin(1);
+        run.Shot();
+        Assert.AreEqual((1, 1), (run.attempts, run.shots));
+        Assert.AreEqual(Rules.Run.End.Forgiven, run.EndShot(-1, None, None, 8, out var msg), "the level's one foul pays for it");
+        StringAssert.Contains("Fallo concesso", msg);
+        Assert.AreEqual(Rules.Run.End.Continue, run.EndShot(3, None, None, 8, out msg));
+        Assert.IsNull(msg);
+        Assert.AreEqual(Rules.Run.End.Restart, run.EndShot(-1, None, None, 8, out msg), "no fouls left");
+        StringAssert.Contains("ricomincia", msg);
+        run.Begin(1);
+        Assert.AreEqual((2, 0, 1), (run.attempts, run.shots, run.foulsLeft), "restart: new attempt, shots and fouls from scratch");
+        Assert.AreEqual(Rules.Run.End.Win, run.EndShot(8, new[] { 8 }, None, 8, out _));
+    }
+
     [Test] public void SpendFoul_ForgivesUntilNoneLeft()
     {
         int left = 2;

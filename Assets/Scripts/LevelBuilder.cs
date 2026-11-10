@@ -23,8 +23,17 @@ public static partial class LevelBuilder
 
         public char TileAt(Vector3 p) => At(tiles, CellOf(p));
 
-        public Pocket PocketAt(Vector3 p) =>
-            pockets.FirstOrDefault(pk => (new Vector2(p.x, p.z) - pk.center).sqrMagnitude < pk.radius * pk.radius);
+        // plain loop, no LINQ: called for every ball at every 1 ms step (a closure per call was GC hitches on the break)
+        public Pocket PocketAt(Vector3 p)
+        {
+            for (int i = 0; i < pockets.Count; i++)
+            {
+                var pk = pockets[i];
+                float dx = p.x - pk.center.x, dz = p.z - pk.center.y;
+                if (dx * dx + dz * dz < pk.radius * pk.radius) return pk;
+            }
+            return null;
+        }
 
         public Dictionary<Vector2Int, int> angles = new(); // oriented tiles (OrientedChars) from the file; boosters without one use their char
         public Dictionary<Vector2Int, int> floors = new(); // floor of raised cells (missing = 0), y = floor * FloorStep
@@ -145,8 +154,15 @@ public static partial class LevelBuilder
         // false = the ball drops here (into a pocket hole or off the table)
         public bool Supports(Vector3 p) => GroundAt(p).HasValue;
 
-        public Platform PlatformAt(Vector3 p) =>
-            platforms.FirstOrDefault(pl => !pl.saw && Mathf.Abs(p.x - pl.center.x) <= 0.5f && Mathf.Abs(p.z - pl.center.z) <= 0.5f);
+        public Platform PlatformAt(Vector3 p)
+        {
+            for (int i = 0; i < platforms.Count; i++)
+            {
+                var pl = platforms[i];
+                if (!pl.saw && Mathf.Abs(p.x - pl.center.x) <= 0.5f && Mathf.Abs(p.z - pl.center.z) <= 0.5f) return pl;
+            }
+            return null;
+        }
 
         // push direction of the booster on this cell, zero if it isn't one
         public Vector3 BoostDirAt(Vector2Int cell) => BoostChars.IndexOf(At(tiles, cell)) < 0 ? Vector3.zero : AngleDir(AngleAt(cell));

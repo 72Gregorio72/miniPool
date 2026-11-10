@@ -73,6 +73,19 @@ public class LevelDraftTests
         Assert.AreEqual('X', d.cells[new Vector2Int(3, 3)]);
     }
 
+    [Test] public void RotateClip_TurnsCellsAndAngles()
+    {
+        var d = Draft();
+        d.Apply('>', new Vector2Int(1, 1), Vector2Int.zero, null, 0, 0, false, false); // booster toward the far side
+        d.Apply('X', new Vector2Int(2, 1), Vector2Int.zero, null, 0, 0, false, false); // spikes to its right
+        d.Select(LevelDraft.CopyTool, new Vector2Int(1, 1), new Vector2Int(2, 1), Vector2Int.zero);
+        d.RotateClip(1); // clockwise: right becomes near
+        Assert.IsTrue(d.Paste(new Vector2Int(3, 3), Vector2Int.zero));
+        Assert.AreEqual('>', d.cells[new Vector2Int(3, 3)]);
+        Assert.AreEqual(90, d.angles[new Vector2Int(3, 3)], "the booster now points right");
+        Assert.AreEqual('X', d.cells[new Vector2Int(3, 2)], "the spikes are now on the near side of the booster");
+    }
+
     [Test] public void MoveThenDrop_LeavesFelt()
     {
         var d = Draft();

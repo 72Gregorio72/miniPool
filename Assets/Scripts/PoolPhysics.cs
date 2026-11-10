@@ -101,8 +101,9 @@ public static class PoolPhysics
     // Aim guide: runs the shot ahead with the real physics (spin, massé, cushions, modules), then puts everything back.
     // cuePath = the cue ball until `after` seconds past its first ball contact (or until it stops); hitPath = that ball meanwhile.
     // Other balls keep their current velocity (on clients they're still: only positions arrive).
+    // `seconds` caps a shot that hits nothing (most stop earlier): 2 s = 1000 steps at most, so aiming online with a full rack stays smooth.
     public static void Predict(LevelBuilder.Level lv, Ball cue, Vector3 dir, float speed, Vector2 tip, float elevation,
-        System.Collections.Generic.List<Vector3> cuePath, System.Collections.Generic.List<Vector3> hitPath, float seconds = 3f, float after = 0.6f)
+        System.Collections.Generic.List<Vector3> cuePath, System.Collections.Generic.List<Vector3> hitPath, float seconds = 2f, float after = 0.6f)
     {
         cuePath.Clear();
         hitPath.Clear();

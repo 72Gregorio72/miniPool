@@ -68,7 +68,9 @@ public class LevelEditorWindow : EditorWindow
     Vector2 scroll;
 
     // hover preview
-    string hoverKey;
+    string hoverKey, pendingKey; // pendingKey: the hover not yet shown, waiting HoverDelay since it last changed
+    double pendingAt;
+    const double HoverDelay = 0.05;
     bool hovering, hoverChanges, hoverErase;
     Vector2Int hoverCell, hoverSub;
 
@@ -158,6 +160,7 @@ public class LevelEditorWindow : EditorWindow
     {
         SceneView.duringSceneGui -= OnScene;
         EditorApplication.playModeStateChanged -= OnPlayMode;
+        EditorApplication.update -= HoverLater;
         DestroyPreview();
     }
 
@@ -408,6 +411,17 @@ public class LevelEditorWindow : EditorWindow
         var key = $"{(small || d.clip is { fine: true } ? hoverSub : hoverCell)} {rectStart} {brush} {boostAngle} {floor} {stack} {hoverErase} {d.cells.Count} {d.objects.Count} {dirty} {d.clip?.GetHashCode()}";
         hovering = true;
         if (!force && key == hoverKey) return;
+        // shortcut: the preview rebuilds the whole level, so it waits for the mouse to settle (HoverLater) instead of chasing every cell
+        if (!force && key != pendingKey)
+        {
+            pendingKey = key;
+            pendingAt = EditorApplication.timeSinceStartup;
+            EditorApplication.update -= HoverLater;
+            EditorApplication.update += HoverLater;
+            return;
+        }
+        if (!force && EditorApplication.timeSinceStartup - pendingAt < HoverDelay) return;
+        EditorApplication.update -= HoverLater;
         hoverKey = key;
         var real = d.GetText(out var realMin);
         var o0 = new Dictionary<Vector2Int, char>(d.objects);
@@ -428,6 +442,14 @@ public class LevelEditorWindow : EditorWindow
             }
         d.SetText(real, realMin); // the clip and the pick-up stay
         if (!hoverChanges && wasGhost) Rebuild(); // back to the real level
+    }
+
+    void HoverLater()
+    {
+        if (!hovering) { EditorApplication.update -= HoverLater; return; }
+        if (EditorApplication.timeSinceStartup - pendingAt < HoverDelay) return;
+        ShowHover(false);
+        SceneView.RepaintAll();
     }
 
     void EndHover()

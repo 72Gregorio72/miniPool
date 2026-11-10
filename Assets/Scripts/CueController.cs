@@ -14,6 +14,7 @@ public class CueController : MonoBehaviour
     public System.Action<Vector3, float, Vector2, float> shoot; // multiplayer: send the shot (dir, speed, tip, elevation) instead of applying it here
     public bool guide; // multiplayer: aim lines from a run-ahead of the shot (PoolPhysics.Predict), spin and raised cue included
     public bool guideHit = true; // also the yellow line of the ball that gets hit (off in 8-ball: too easy)
+    public GameUI ui; // draws the cue-ball diagram (tip spot, elevation) and the power bar (GameUI.SetCue)
 
     LineRenderer cueLine, hitLine;
     readonly System.Collections.Generic.List<Vector3> cuePath = new(), hitPath = new();
@@ -47,6 +48,7 @@ public class CueController : MonoBehaviour
     {
         if (stick) stick.gameObject.SetActive(on);
         if (cueLine) hitLine.enabled = (cueLine.enabled = on && guide) && guideHit;
+        if (ui) ui.SetCue(on, tip, power, elevation);
     }
 
     static LineRenderer Line(string name, Color c, Transform parent)
@@ -91,7 +93,6 @@ public class CueController : MonoBehaviour
         var kb = Keyboard.current;
 
         if (orbit.Free) { pulling = false; power = 0; Show(false); return; }
-        Show(true);
 
         if (kb != null && kb.escapeKey.wasPressedThisFrame) { pulling = false; power = 0; }
         if (kb != null)
@@ -123,6 +124,7 @@ public class CueController : MonoBehaviour
             }
         }
 
+        Show(true); // after the input: the HUD shows this frame's tip and power
         PlaceStick(orbit.AimDirection);
         if (guide) UpdateGuide(orbit.AimDirection);
     }
@@ -139,25 +141,5 @@ public class CueController : MonoBehaviour
         float drop = Mathf.Max(0, elevation / PoolPhysics.MinElevation) * 0.7f * Ball.Radius;
         var tipPos = from + (side * tip.x + faceUp * tip.y) * Ball.Radius - axis * (Mathf.Sqrt(Ball.Radius * Ball.Radius - drop * drop) + 0.05f + power * 1.5f) + Vector3.down * drop; // tip stays on the ball's surface
         stick.SetPositionAndRotation(tipPos - axis * CueLength / 2, Quaternion.FromToRotation(Vector3.up, axis));
-    }
-
-    void OnGUI()
-    {
-        if (orbit != null && orbit.Free) return;
-        // cue-ball diagram with the tip position
-        const float size = 90;
-        var box = new Rect(Screen.width - size - 16, Screen.height - size - 56, size, size);
-        GUI.Box(box, "");
-        GUI.Label(new Rect(box.x - 40, box.y - 22, size + 60, 20), "Effetto (destro + sinistro)");
-        GUI.Label(new Rect(box.x - 40, box.yMax + 2, size + 60, 20), elevation < 0 ? $"Colpo da sotto (salto): {-elevation:0}° (W / S)" : $"Stecca alzata: {elevation:0}° (W / S)");
-        var c = box.center + new Vector2(tip.x, -tip.y) * size;
-        GUI.Box(new Rect(c.x - 6, c.y - 6, 12, 12), "");
-
-        // power bar
-        var bar = new Rect(Screen.width - size - 46, box.y, 18, size);
-        GUI.Box(bar, "");
-        GUI.color = Color.Lerp(Color.green, Color.red, power);
-        GUI.DrawTexture(new Rect(bar.x + 2, bar.yMax - 2 - (size - 4) * power, 14, (size - 4) * power), Texture2D.whiteTexture);
-        GUI.color = Color.white;
     }
 }

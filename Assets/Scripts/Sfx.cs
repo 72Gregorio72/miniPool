@@ -38,7 +38,7 @@ public class Sfx : MonoBehaviour
     public static float Music
     {
         get => PlayerPrefs.GetFloat("MiniPool.music", 1);
-        set { PlayerPrefs.SetFloat("MiniPool.music", value); if (inst != null) inst.music.volume = MusicVolume * value; }
+        set { PlayerPrefs.SetFloat("MiniPool.music", value); PlayerPrefs.Save(); if (inst != null) inst.music.volume = MusicVolume * value; }
     }
 
     // strength 0..1 (clamped): how hard the hit is; no-op outside Play mode (EditMode tests run the physics too)
@@ -57,12 +57,8 @@ public class Sfx : MonoBehaviour
         clips = new AudioClip[kinds.Length][];
         softClips = new AudioClip[kinds.Length][];
         sources = new AudioSource[kinds.Length];
-        for (int i = 0; i < kinds.Length; i++)
-        {
-            clips[i] = Load("Audio/" + kinds[i], MaxLength[i], i <= (int)Kind.Cue);
-            softClips[i] = Load("Audio/" + kinds[i] + "Soft", MaxLength[i]);
-            sources[i] = gameObject.AddComponent<AudioSource>();
-        }
+        for (int i = 0; i < kinds.Length; i++) sources[i] = gameObject.AddComponent<AudioSource>();
+        StartCoroutine(LoadClips(kinds));
 
         music = gameObject.AddComponent<AudioSource>();
         music.clip = Resources.Load<AudioClip>("Audio/Music");
@@ -71,13 +67,24 @@ public class Sfx : MonoBehaviour
         if (music.clip != null) music.Play();
     }
 
+    // one kind per frame: decoding, trimming and normalizing every clip in Awake was a startup hitch growing with each sound added
+    System.Collections.IEnumerator LoadClips(Kind[] kinds)
+    {
+        for (int i = 0; i < kinds.Length; i++)
+        {
+            clips[i] = Load("Audio/" + kinds[i], MaxLength[i], i <= (int)Kind.Cue);
+            softClips[i] = Load("Audio/" + kinds[i] + "Soft", MaxLength[i]);
+            yield return null;
+        }
+    }
+
     void LateUpdate()
     {
         for (int i = 0; i < pending.Length; i++)
         {
             float s = pending[i];
             pending[i] = 0;
-            if (s <= 0 || Time.unscaledTime - lastAt[i] < Repeat && s <= lastVolume[i]) continue;
+            if (s <= 0 || clips[i] == null || Time.unscaledTime - lastAt[i] < Repeat && s <= lastVolume[i]) continue;
             bool soft = s < Soft && softClips[i].Length > 0;
             var set = soft ? softClips[i] : clips[i];
             if (set.Length == 0) continue;

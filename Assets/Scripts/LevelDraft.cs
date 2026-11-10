@@ -54,6 +54,50 @@ public class LevelDraft
         new("Gomma", ' ', new Color(1f, 0.4f, 0.4f), -1),
     };
 
+    // what each brush does, one line for the editor HUD (HelpOf)
+    static readonly Dictionary<char, string> Help = new()
+    {
+        ['.'] = "Panno: il tavolo su cui rotolano le palle.",
+        [LevelBuilder.FeltWithRails] = "Panno con sponde automatiche intorno; dipinto su una sponda la apre, così i pezzi si uniscono.",
+        ['#'] = "Sponda: la palla ci rimbalza.",
+        [LevelBuilder.DiagRail] = "Sponda diagonale: metà sponda, metà panno, cuscino in diagonale (gira di 90°).",
+        ['O'] = "Buca: la palla ci cade dentro. Prende la forma da sola: laterale, d'angolo o buco nel panno.",
+        [LevelBuilder.Ramp] = "Rampa: sale di un piano verso la freccia. Se arriva in cima veloce, la palla vola.",
+        [LevelBuilder.Bridge] = "Ponte: impalcato sul piano scelto e panno 2 piani sotto: sopra si passa, sotto si passa sotto. Niente sponde ai lati.",
+        ['0'] = "Bianca: la palla che colpisci con la stecca. Ce n'è una sola.",
+        ['*'] = "Grigia: palla senza numero, quante vuoi. Serve da colpire per spostarsi senza fallo.",
+        ['R'] = "Triangolo: le 15 palle del biliardo, vertice qui e file verso destra.",
+        ['P'] = "Blocco: cubo pieno alto 1, non si scavalca nemmeno saltando.",
+        ['X'] = "Spine: la palla che ci entra muore (come fuori dal tavolo).",
+        ['Q'] = "Respingente: palo tondo che spinge via la palla a ogni urto.",
+        ['K'] = "Pulsante: finché una palla ci sta sopra, tutti i cancelli sono abbassati.",
+        [LevelBuilder.Gate] = "Cancello: muro alto 1, giù solo col pulsante premuto. Se si alza sotto una palla la lancia in alto.",
+        [LevelBuilder.TimedWall] = "Muro a tempo: 2 secondi su, 2 giù. Parte su.",
+        [LevelBuilder.TimedWallInv] = "Muro a tempo verde: al contrario dei viola (giù quando loro sono su). Parte giù.",
+        ['J'] = "Ventola: la palla che ci passa sopra salta e scavalca vuoti e palle.",
+        ['>'] = "Spinta: la palla che arriva al centro riparte nella direzione della freccia (R / Q la girano di 15°).",
+        [LevelBuilder.PortalBlue] = "Portale blu: entrando si esce dall'arancione, girati della differenza fra i due angoli. Uno per livello.",
+        [LevelBuilder.PortalOrange] = "Portale arancione: entrando si esce dal blu. Uno per livello.",
+        ['I'] = "Ghiaccio: niente attrito, la palla scivola quasi senza rallentare.",
+        ['M'] = "Sabbia: frena molto.",
+        ['W'] = "Tombino: la palla che ci entra si ferma al centro.",
+        ['Z'] = "Calamita: attira le palle vicine; lenta e vicina, la palla resta agganciata al centro.",
+        [LevelBuilder.WindFan] = "Ventilatore: blocco solido che soffia per 3 tile verso la freccia, fermato da sponde e blocchi.",
+        ['N'] = "Nastro: trasporta la palla verso la freccia.",
+        [LevelBuilder.PlatformTile] = "Piattaforma mobile: niente tavolo sotto, porta chi ci sta sopra. Segue gli estensori; senza, va dritta sul vuoto.",
+        [LevelBuilder.Saw] = "Sega: lama che gira e segue gli estensori; la palla che la tocca muore.",
+        [LevelBuilder.Track] = "Estensore: pezzo di percorso per piattaforme e seghe; chi ci arriva gira verso la sua freccia.",
+        [' '] = "Gomma: cancella tile, moduli e palle (con «Sovrapposizione: sì» solo il modulo in cima).",
+    };
+
+    /// <summary>What the brush does, for the editor HUD ("" for the tools).</summary>
+    public static string HelpOf(char c)
+    {
+        if (Help.TryGetValue(c, out var s)) return s;
+        int n = BallChars.IndexOf(c) + 1;
+        return n > 0 ? $"Palla {n}: si può imbucare o perdere liberamente" + (n == LevelEditor.Goal ? " (nei tuoi livelli è l'obiettivo)." : ".") : "";
+    }
+
     public const string BallChars = "123456789ABCDEF";
     public const char MoveTool = '\u0001', CopyTool = '\u0002'; // brush values that aren't tiles
     public const int MaxFloor = 6, RotateStep = 15;
@@ -173,6 +217,27 @@ public class LevelDraft
         clip = Grab(a, b);
         clip.single = a == b;
         cut = (Vector2Int.Min(a, b), Vector2Int.Max(a, b));
+    }
+
+    // 90° clockwise around the clip's anchor: far side (+z) -> right (+x), like LevelBuilder.PieceCells
+    static Vector2Int Turn(Vector2Int k) => new(k.y, -k.x);
+
+    /// <summary>Turns the clip in hand by 90° steps (clockwise for positive turns); oriented tiles turn with it.</summary>
+    // shortcut: a rack keeps growing toward +x after a turn (its rows are fixed), rotate it in Rack if level makers ask
+    public void RotateClip(int turns)
+    {
+        if (clip == null || clip.fine) return;
+        for (turns = (turns % 4 + 4) % 4; turns > 0; turns--)
+        {
+            var r = new Clip { single = clip.single, min = new Vector2Int(clip.min.y, -clip.max.x), max = new Vector2Int(clip.max.y, -clip.min.x) };
+            foreach (var kv in clip.cells) r.cells[Turn(kv.Key)] = kv.Value;
+            foreach (var kv in clip.objects) r.objects[Turn(kv.Key)] = kv.Value;
+            foreach (var kv in clip.under) r.under[Turn(kv.Key)] = kv.Value;
+            foreach (var kv in clip.floors) r.floors[Turn(kv.Key)] = kv.Value;
+            foreach (var kv in clip.angles) r.angles[Turn(kv.Key)] = (kv.Value + 90) % 360;
+            foreach (var kv in clip.above) r.above[Turn(kv.Key)] = kv.Value.Select(e => (e.c, LevelBuilder.IsOriented(e.c) ? (e.angle + 90) % 360 : e.angle)).ToList();
+            clip = r;
+        }
     }
 
     /// <summary>Drops / pastes the clip at the mouse (Sposta also clears where it came from).</summary>

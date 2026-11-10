@@ -16,6 +16,7 @@ using UnityEngine.InputSystem;
 public partial class MultiplayerGame : MonoBehaviour
 {
     public const int MaxPlayers = 8, TargetScore = 10;
+    const byte Protocol = 1; // bumped when a message changes shape: a Hello with another version is kicked (OnMessage)
     const byte Hello = 1, Lobby = 2, Round = 3, State = 4, Shoot = 5, Toast = 6, RoundEnd = 7, Build = 8, Pick = 9, Place = 10, Done = 11, PocketMsg = 12,
         PoolEnd = 13, PlaceCue = 14;
 
@@ -87,7 +88,7 @@ public partial class MultiplayerGame : MonoBehaviour
         ui.ShowMultiplayer("Mi collego…");
         net = NewNet();
         try { await net.Join(code); }
-        catch (Exception e) { Debug.LogWarning(e); Fail("Codice non valido o partita non trovata"); }
+        catch (Exception e) { Debug.LogWarning(e); Fail("Codice non valido o partita non trovata"); return; }
         // the Connect event sends Hello; the host answers with the lobby
     }
 
@@ -100,7 +101,7 @@ public partial class MultiplayerGame : MonoBehaviour
 
     void OnConnected(int id)
     {
-        if (!net.IsHost) net.Send(0, Net.Msg(Hello, w => w.Write(BallArt.SelectedSkin)));
+        if (!net.IsHost) net.Send(0, Net.Msg(Hello, w => { w.Write(Protocol); w.Write(BallArt.SelectedSkin); }));
         else if (started || players.Count >= (pool ? 2 : MaxPlayers)) net.Kick(id); // no joining a match in progress
     }
 
@@ -159,7 +160,19 @@ public partial class MultiplayerGame : MonoBehaviour
 
     // ---------- messages ----------
 
+    // a malformed message (another game version, a tampered client) must not throw out of Update and leave the host half-way: the sender goes
     void OnMessage(int from, byte[] data)
+    {
+        try { Handle(from, data); }
+        catch (Exception e)
+        {
+            Debug.LogWarning($"[Net] messaggio non valido da {from}: {e.Message}");
+            if (net.IsHost) { net.Kick(from); OnDisconnected(from); } // Kick raises no Disconnect event
+            else Fail("Messaggio non valido dall'host (versione del gioco diversa?)");
+        }
+    }
+
+    void Handle(int from, byte[] data)
     {
         using var r = new BinaryReader(new MemoryStream(data));
         byte type = r.ReadByte();
@@ -167,6 +180,7 @@ public partial class MultiplayerGame : MonoBehaviour
         {
             if (type == Hello && !started)
             {
+                if (r.ReadByte() != Protocol) throw new InvalidDataException("versione del protocollo diversa");
                 players[from] = new Player { id = from, skin = Mathf.Clamp(r.ReadInt32(), 0, BallArt.Skins.Length - 1) };
                 BroadcastLobby();
             }
@@ -377,6 +391,7 @@ public partial class MultiplayerGame : MonoBehaviour
             cueCtl.transform.SetParent(transform);
             cueCtl.shoot = RequestShot;
             cueCtl.guide = true;
+            cueCtl.ui = ui;
         }
         cueCtl.guideHit = !pool;
         cueCtl.cue = mine;
