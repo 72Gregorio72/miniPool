@@ -11,10 +11,11 @@ using UnityEngine.UI;
 // Home (Gioca / Skin / Esci), level select (one real 3D pool ball per level, 15 per world, live 3D preview behind),
 // cue-ball skins and the results card. uGUI built in code: no prefabs, no scene setup.
 // The canvas sits in front of the camera (Screen Space - Camera) so the 3D balls, placed between the two, draw over it.
-public class GameUI : MonoBehaviour
+public partial class GameUI : MonoBehaviour
 {
     public Action<int> onSelect, onPlay; // level index
     public Action onMenu, onHost, onHostPool; // onHostPool: online 8-ball (2 players, turns)
+    public Action onCreate; // "Crea livelli": the user's levels (LevelEditor)
     public Action<string> onJoin; // join code
     public List<int> levels = new();
 
@@ -23,7 +24,7 @@ public class GameUI : MonoBehaviour
         CrownGold = new(1f, 0.78f, 0.15f); // crown outline around a level's ball
     const float PlaneDistance = 0.3f, ModelDistance = 0.2f; // canvas and 3D icons, in front of the camera
 
-    enum Page { None, Home, Levels, Skins, TableSkins, Pause, Settings }
+    enum Page { None, Home, Levels, Skins, TableSkins, Pause, Settings, MyLevels, Editor }
     Page screen;
     public bool OnSettings => screen == Page.Settings;
     public int escFrame; // frame in which this UI used Esc, so the game doesn't use it too
@@ -164,16 +165,18 @@ public class GameUI : MonoBehaviour
         Label(left, "Biliardo, minigolf e niente falli", 34, Worlds.ThemeOf(0).accent, new Vector2(146, 130), new Vector2(1000, 50), TextAnchor.MiddleLeft, true, true);
 
         const float bx = 140 + 210;
-        Btn(left, "Gioca", Worlds.ThemeOf(0).accent, Ink, new Vector2(bx, 0), new Vector2(420, 88), () => ShowLevels(previewed), round);
-        Btn(left, "Multiplayer", Glass, White, new Vector2(bx, -110), new Vector2(420, 88), () => ShowMultiplayer(null), round);
-        Btn(left, "Skin", Glass, White, new Vector2(bx, -220), new Vector2(420, 88), ShowSkins, round);
-        Btn(left, "Impostazioni", Glass, White, new Vector2(bx, -330), new Vector2(420, 88), () => ShowSettings(ShowHome), round);
-        Btn(left, "Esci", Glass, White, new Vector2(bx, -440), new Vector2(420, 88), Quit, round);
+        var items = new (string, Action)[]
+        {
+            ("Gioca", () => ShowLevels(previewed)), ("Multiplayer", () => ShowMultiplayer(null)), ("Crea livelli", () => onCreate?.Invoke()),
+            ("Skin", ShowSkins), ("Impostazioni", () => ShowSettings(ShowHome)), ("Esci", Quit),
+        };
+        for (int i = 0; i < items.Length; i++)
+            Btn(left, items[i].Item1, i == 0 ? Worlds.ThemeOf(0).accent : Glass, i == 0 ? Ink : White, new Vector2(bx, 30 - i * 100), new Vector2(420, 82), items[i].Item2, round);
     }
 
     // ---------- pause / settings ----------
 
-    public void ShowPause(Action resume, Action restart, Action levelsMenu)
+    public void ShowPause(Action resume, Action restart, Action levelsMenu, string menuLabel = "Livelli")
     {
         Hide();
         screen = Page.Pause;
@@ -187,8 +190,8 @@ public class GameUI : MonoBehaviour
         {
             ("Riprendi", Worlds.ThemeOf(0).accent, resume),
             ("Ricomincia", Soft, restart),
-            ("Impostazioni", Soft, () => ShowSettings(() => ShowPause(resume, restart, levelsMenu))),
-            ("Livelli", Soft, levelsMenu),
+            ("Impostazioni", Soft, () => ShowSettings(() => ShowPause(resume, restart, levelsMenu, menuLabel))),
+            (menuLabel, Soft, levelsMenu),
         };
         for (int i = 0; i < items.Length; i++)
             Btn(card, items[i].Item1, items[i].Item2, Ink, new Vector2(0, 110 - i * 105), new Vector2(400, 84), items[i].Item3, round);
@@ -604,8 +607,17 @@ public class GameUI : MonoBehaviour
         if (menu != null) Btn(card, "Menu", Worlds.ThemeOf(0).accent, Ink, new Vector2(0, -h / 2 + 70), new Vector2(260, 80), menu, round);
     }
 
-    InputField Input(Transform parent, string placeholder, Vector2 pos, Vector2 size)
+    // name = true: a level name (letters, digits, spaces, - and _, up to 24); otherwise a relay code
+    InputField Input(Transform parent, string placeholder, Vector2 pos, Vector2 size, bool name = false)
     {
+        if (name)
+        {
+            var f0 = Input(parent, placeholder, pos, size);
+            f0.characterLimit = 24;
+            f0.textComponent.fontSize = 34;
+            f0.onValidateInput = (_, _, c) => char.IsLetterOrDigit(c) || c is ' ' or '-' or '_' ? c : '\0';
+            return f0;
+        }
         var rt = Box(parent, White, pos, size);
         rt.GetComponent<Image>().raycastTarget = true;
         var ph = Label(rt, placeholder, 34, new Color(0, 0, 0, 0.3f), Vector2.zero, size, bold: true);
@@ -726,6 +738,7 @@ public class GameUI : MonoBehaviour
             else if (enter) { GameManager.TableSkin = skinShown; ShowTableSkin(skinShown); }
             else if (esc) ShowHome();
         }
+        else if (screen == Page.MyLevels && esc) myLevelsBack?.Invoke();
         else if (screen == Page.Settings && esc)
         {
             escFrame = Time.frameCount;

@@ -13,6 +13,14 @@ public static class Rules
         public string message;
     }
 
+    // a foul with fouls left (the level's "falli" line) is forgiven: one is spent and the shot is undone; none left = restart
+    public static bool SpendFoul(ref int left)
+    {
+        if (left <= 0) return false;
+        left--;
+        return true;
+    }
+
     // crown on a level: won in at most `par` shots (best = fewest shots of a winning run, 0 = never won; par 0 = not set)
     public static bool Crown(int best, int par) => par > 0 && best > 0 && best <= par;
 

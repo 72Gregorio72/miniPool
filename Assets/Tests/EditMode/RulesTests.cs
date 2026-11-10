@@ -24,6 +24,24 @@ public class RulesTests
         Assert.AreEqual(1, LevelBuilder.ParseObjects(text).Count);
     }
 
+    [Test] public void FoulsLine_ReadNextToPar()
+    {
+        const string text = "#0#\n---\n8 3 0\ntiri 4\nfalli 2\n";
+        Assert.AreEqual(2, LevelBuilder.FoulsOf(text));
+        Assert.AreEqual(4, LevelBuilder.ParOf(text));
+        Assert.AreEqual(0, LevelBuilder.FoulsOf("#0#\n"));
+    }
+
+    [Test] public void SpendFoul_ForgivesUntilNoneLeft()
+    {
+        int left = 2;
+        Assert.IsTrue(Rules.SpendFoul(ref left));
+        Assert.IsTrue(Rules.SpendFoul(ref left));
+        Assert.AreEqual(0, left);
+        Assert.IsFalse(Rules.SpendFoul(ref left), "none left: restart");
+        Assert.AreEqual(0, left);
+    }
+
     [Test] public void AnyBallHitFirst_IsFine()
     {
         var o = Eval(8, None, None);

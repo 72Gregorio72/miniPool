@@ -2,7 +2,8 @@ using UnityEngine;
 
 // Sound effects and background music from Resources/Audio (generated with ElevenLabs):
 // one folder per kind (Ball, Cushion, Cue, Pocket) with any number of variants, picked at random, plus an optional <Kind>Soft folder
-// for gentle hits (a soft hit sounds different, not just quieter: played quiet, a hard hit sounds far away). Music = looping lounge track.
+// for gentle hits (a soft hit sounds different, not just quieter: played quiet, a hard hit sounds far away). Ball/Cushion/Cue are recorded
+// hits (Billiards Sound Pack), named low -> high pitched and picked by strength instead. Music = looping lounge track.
 // Hits are collected per frame and the loudest of each kind plays once, so a break doesn't stack up dozens of voices.
 // shortcut: multiplayer clients don't run the physics, so they only hear their own cue; send hits in the state if it matters
 public class Sfx : MonoBehaviour
@@ -16,7 +17,7 @@ public class Sfx : MonoBehaviour
     // and those micro-contacts played every few frames buzz like a broken TV
     const float Repeat = 0.15f;
     // seconds kept of each kind (by Kind): the generated clips trail off in hiss that sounds like a broken TV
-    static readonly float[] MaxLength = { 0.15f, 0.2f, 0.15f, 0.5f, 0.45f, 0.4f, 0.25f, 0.5f, 0.35f, 0.4f, 0.4f, 0.35f, 0.15f, 0.4f, 0.1f, 1.4f, 0.7f, 2.3f };
+    static readonly float[] MaxLength = { 0.3f, 0.6f, 0.65f, 0.5f, 0.45f, 0.4f, 0.25f, 0.5f, 0.35f, 0.4f, 0.4f, 0.35f, 0.15f, 0.4f, 0.1f, 1.4f, 0.7f, 2.3f };
     // by Kind (production/audio/sfx-e-musica/sfx-spec.md): loudness in the mix, and random pitch ± % (0 for the tonal ones, in key with the music)
     static readonly float[] Gain = { 0.85f, 0.75f, 0.8f, 0.8f, 0.6f, 0.6f, 0.65f, 0.6f, 0.7f, 0.65f, 0.7f, 0.6f, 0.6f, 0.65f, 0.5f, 0.7f, 0.45f, 0.8f };
     static readonly float[] Pitch = { 4, 4, 3, 3, 5, 5, 4, 0, 5, 4, 3, 4, 3, 4, 2, 0, 0, 0 };
@@ -58,7 +59,7 @@ public class Sfx : MonoBehaviour
         sources = new AudioSource[kinds.Length];
         for (int i = 0; i < kinds.Length; i++)
         {
-            clips[i] = Load("Audio/" + kinds[i], MaxLength[i]);
+            clips[i] = Load("Audio/" + kinds[i], MaxLength[i], i <= (int)Kind.Cue);
             softClips[i] = Load("Audio/" + kinds[i] + "Soft", MaxLength[i]);
             sources[i] = gameObject.AddComponent<AudioSource>();
         }
@@ -83,7 +84,11 @@ public class Sfx : MonoBehaviour
             // each set covers its own range of strength: soft variants quiet, hard ones loud
             float lo = !soft && softClips[i].Length > 0 ? Soft : 0, hi = soft ? Soft : 1, t = Mathf.InverseLerp(lo, hi, s);
             float volume = soft ? Mathf.Lerp(0.2f, 0.6f, t) : Mathf.Lerp(lo > 0 ? 0.6f : 0.4f, 1, t);
-            var clip = set[Random.Range(0, set.Length)];
+            // Ball/Cushion/Cue variants are named low -> high pitched (recorded hits, cut by brightness): a harder hit picks a higher one,
+            // ± half a step so equal hits still vary; the others are random
+            var clip = i <= (int)Kind.Cue
+                ? set[Mathf.Clamp(Mathf.RoundToInt(s * (set.Length - 1) + Random.Range(-0.5f, 0.5f)), 0, set.Length - 1)]
+                : set[Random.Range(0, set.Length)];
             sources[i].pitch = 1 + Random.Range(-Pitch[i], Pitch[i]) / 100;
             sources[i].PlayOneShot(clip, volume * Gain[i] * SfxVolume);
             lastAt[i] = Time.unscaledTime; // the pause menu stops Time.time
@@ -91,13 +96,17 @@ public class Sfx : MonoBehaviour
         }
     }
 
-    static AudioClip[] Load(string path, float maxSeconds) =>
-        System.Array.FindAll(System.Array.ConvertAll(Resources.LoadAll<AudioClip>(path), c => Clean(c, maxSeconds)), c => c != null);
+    static AudioClip[] Load(string path, float maxSeconds, bool keepTail = false)
+    {
+        var all = Resources.LoadAll<AudioClip>(path);
+        System.Array.Sort(all, (a, b) => string.CompareOrdinal(a.name, b.name)); // LoadAll order isn't guaranteed; graded kinds need it
+        return System.Array.FindAll(System.Array.ConvertAll(all, c => Clean(c, maxSeconds, keepTail)), c => c != null);
+    }
 
     // Trims by loudness over 5 ms windows: starts at the attack, ends where the sound drops below -24 dB of its loudest part
     // (the low hiss after it is cut), fades the end and brings every variant to the same peak, so they all match.
     // A clip still loud after `maxSeconds` has noise in it (sounds like a broken TV): skipped (null) with a warning.
-    static AudioClip Clean(AudioClip c, float maxSeconds)
+    static AudioClip Clean(AudioClip c, float maxSeconds, bool keepTail)
     {
         int ch = c.channels, n = c.samples, win = Mathf.Max(1, c.frequency / 200);
         var d = new float[n * ch];
@@ -116,14 +125,14 @@ public class Sfx : MonoBehaviour
         if (loudest == 0) return null;
         int start = 0, end = windows - 1;
         while (rms[start] < 0.1f * loudest) start++;
-        while (rms[end] < 0.06f * loudest) end--;
+        if (!keepTail) while (rms[end] < 0.06f * loudest) end--; // recorded hits (Ball/Cushion/Cue) come with their own faded tail
         int first = Mathf.Max(0, start * win - c.frequency / 1000), frames = Mathf.Min(n, (end + 1) * win) - first; // 1 ms before the attack
         if (frames > maxSeconds * c.frequency)
         {
             Debug.LogWarning($"[Sfx] {c.name}: still loud after {maxSeconds}s (noise), skipped");
             return null;
         }
-        int fade = Mathf.Max(1, frames / 3); // the tail decays instead of stopping dead
+        int fade = keepTail ? 1 : Mathf.Max(1, frames / 3); // the tail decays instead of stopping dead
         var o = new float[frames * ch];
         for (int f = 0; f < frames; f++)
             for (int k = 0; k < ch; k++)

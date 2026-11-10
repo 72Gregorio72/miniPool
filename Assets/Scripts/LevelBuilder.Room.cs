@@ -11,11 +11,34 @@ public static partial class LevelBuilder
     const float RoomMargin = 12, RoomHeight = 19, LampY = 6.3f;
     static Worlds.Hall hall; // SetTheme
 
-    static readonly Color[] Planks = { new(0.55f, 0.33f, 0.17f), new(0.48f, 0.28f, 0.14f), new(0.6f, 0.38f, 0.2f) };
-    static readonly Color RugColor = new(0.45f, 0.08f, 0.1f), RugBorder = new(0.85f, 0.65f, 0.25f);
-    static readonly Color[] Wallpaper = { new(0.1f, 0.26f, 0.2f), new(0.08f, 0.22f, 0.17f) };
-    static readonly Color Panel = new(0.3f, 0.15f, 0.08f), PanelInset = new(0.36f, 0.19f, 0.1f), RailWood = new(0.5f, 0.28f, 0.13f);
-    static readonly Color CeilingColor = new(0.2f, 0.13f, 0.09f), CueLight = new(0.88f, 0.72f, 0.45f), CueDark = new(0.15f, 0.08f, 0.05f);
+    // colors of the pool room (same layout in every world that has one)
+    public class RoomLook
+    {
+        public Color[] planks, wallpaper;
+        public Color rug, rugBorder, panel, panelInset, railWood, ceiling, lampShade;
+    }
+
+    // world 1: dark wood, red rug, green striped wallpaper
+    static readonly RoomLook ClassicLook = new()
+    {
+        planks = new Color[] { new(0.55f, 0.33f, 0.17f), new(0.48f, 0.28f, 0.14f), new(0.6f, 0.38f, 0.2f) },
+        rug = new(0.45f, 0.08f, 0.1f), rugBorder = new(0.85f, 0.65f, 0.25f),
+        wallpaper = new Color[] { new(0.1f, 0.26f, 0.2f), new(0.08f, 0.22f, 0.17f) },
+        panel = new(0.3f, 0.15f, 0.08f), panelInset = new(0.36f, 0.19f, 0.1f), railWood = new(0.5f, 0.28f, 0.13f),
+        ceiling = new(0.2f, 0.13f, 0.09f), lampShade = new(0.05f, 0.32f, 0.2f),
+    };
+
+    // world 2 "Laguna" (Worlds.Themes[1]): bleached planks, teal rug with an orange border, sand stripes over deep teal paneling, cream trim
+    static readonly RoomLook LagoonLook = new()
+    {
+        planks = new Color[] { new(0.86f, 0.76f, 0.6f), new(0.8f, 0.69f, 0.53f), new(0.9f, 0.81f, 0.66f) },
+        rug = new(0.12f, 0.5f, 0.52f), rugBorder = new(1f, 0.62f, 0.25f),
+        wallpaper = new Color[] { new(0.96f, 0.84f, 0.62f), new(0.91f, 0.77f, 0.54f) },
+        panel = new(0.07f, 0.33f, 0.36f), panelInset = new(0.1f, 0.42f, 0.45f), railWood = new(0.93f, 0.88f, 0.78f),
+        ceiling = new(0.93f, 0.88f, 0.79f), lampShade = new(1f, 0.55f, 0.2f),
+    };
+
+    static readonly Color CueLight = new(0.88f, 0.72f, 0.45f), CueDark = new(0.15f, 0.08f, 0.05f);
     static readonly Color[][] Paintings =
     {
         new[] { new Color(0.5f, 0.65f, 0.75f), new Color(0.35f, 0.5f, 0.28f), new Color(0.22f, 0.35f, 0.2f) },   // hills
@@ -32,11 +55,11 @@ public static partial class LevelBuilder
             Visual("RoomFloor", PrimitiveType.Cube, b.center + Vector3.down * (TableHeight + 0.05f), new Vector3(120, 0.1f, 120), Quaternion.identity, RoomColor, lv.root);
             return;
         }
-        ClassicRoom(lv);
+        ClassicRoom(lv, hall == Worlds.Hall.Lagoon ? LagoonLook : ClassicLook);
     }
 
     // classic pool room: plank floor, red rug, green striped wallpaper over wood paneling, paintings, a cue rack, pendant lamps
-    static void ClassicRoom(Level lv)
+    static void ClassicRoom(Level lv, RoomLook look)
     {
         var b = lv.bounds;
         float y0 = -TableHeight, y1 = y0 + RoomHeight;
@@ -56,16 +79,16 @@ public static partial class LevelBuilder
             for (float xa = x0 - (row * 3.7f % plankLength), k = 0; xa < x1; xa += plankLength, k++)
             {
                 float a = Mathf.Max(xa, x0), e = Mathf.Min(xa + plankLength, x1);
-                Quad(Planks[(row * 7 + (int)k * 3) % Planks.Length], new Vector3(a, y0, za), new Vector3(e - a, 0, 0), new Vector3(0, 0, zb - za), Vector3.up);
+                Quad(look.planks[(row * 7 + (int)k * 3) % look.planks.Length], new Vector3(a, y0, za), new Vector3(e - a, 0, 0), new Vector3(0, 0, zb - za), Vector3.up);
             }
         }
         // rug under the table, gold border
         var rug = new Vector3(b.size.x + 8, 0, b.size.z + 8);
-        Quad(RugBorder, new Vector3(b.center.x - rug.x / 2, y0 + 0.02f, b.center.z - rug.z / 2), new Vector3(rug.x, 0, 0), new Vector3(0, 0, rug.z), Vector3.up);
+        Quad(look.rugBorder, new Vector3(b.center.x - rug.x / 2, y0 + 0.02f, b.center.z - rug.z / 2), new Vector3(rug.x, 0, 0), new Vector3(0, 0, rug.z), Vector3.up);
         rug -= new Vector3(1.2f, 0, 1.2f);
-        Quad(RugColor, new Vector3(b.center.x - rug.x / 2, y0 + 0.04f, b.center.z - rug.z / 2), new Vector3(rug.x, 0, 0), new Vector3(0, 0, rug.z), Vector3.up);
+        Quad(look.rug, new Vector3(b.center.x - rug.x / 2, y0 + 0.04f, b.center.z - rug.z / 2), new Vector3(rug.x, 0, 0), new Vector3(0, 0, rug.z), Vector3.up);
         // ceiling
-        Quad(CeilingColor, new Vector3(x0, y1, z0), new Vector3(x1 - x0, 0, 0), new Vector3(0, 0, z1 - z0), Vector3.down);
+        Quad(look.ceiling, new Vector3(x0, y1, z0), new Vector3(x1 - x0, 0, 0), new Vector3(0, 0, z1 - z0), Vector3.down);
 
         // walls, counter-clockwise from above: start corner, direction along the wall, inward normal
         var walls = new[]
@@ -84,16 +107,16 @@ public static partial class LevelBuilder
                 Quad(c, start + along * s0 + Vector3.up * h0 + inward * inset, along * (s1 - s0), Vector3.up * (h1 - h0), inward);
 
             const float stripe = 1.5f, wainscot = 6.3f;
-            for (float s = 0, k = 0; s < length; s += stripe, k++) Rect(Wallpaper[(int)k % 2], s, Mathf.Min(s + stripe, length), wainscot, RoomHeight, 0);
-            Rect(Panel, 0, length, 0, wainscot, 0);
+            for (float s = 0, k = 0; s < length; s += stripe, k++) Rect(look.wallpaper[(int)k % look.wallpaper.Length], s, Mathf.Min(s + stripe, length), wainscot, RoomHeight, 0);
+            Rect(look.panel, 0, length, 0, wainscot, 0);
             const float panel = 4.5f;
             int panels = Mathf.Max(1, Mathf.FloorToInt(length / panel));
             float pw = length / panels;
-            for (int p = 0; p < panels; p++) Rect(PanelInset, p * pw + 0.5f, (p + 1) * pw - 0.5f, 1.4f, wainscot - 0.8f, 0.04f);
+            for (int p = 0; p < panels; p++) Rect(look.panelInset, p * pw + 0.5f, (p + 1) * pw - 0.5f, 1.4f, wainscot - 0.8f, 0.04f);
             Rect(DarkWood, 0, length, 0, 0.9f, 0.08f);                       // baseboard
-            Rect(RailWood, 0, length, wainscot, wainscot + 0.5f, 0.12f);     // chair rail
-            Quad(RailWood, start + along * 0 + Vector3.up * (wainscot + 0.5f), along * length, inward * 0.12f, Vector3.up);
-            Rect(RailWood, 0, length, RoomHeight - 0.7f, RoomHeight, 0.1f);  // crown molding
+            Rect(look.railWood, 0, length, wainscot, wainscot + 0.5f, 0.12f);     // chair rail
+            Quad(look.railWood, start + along * 0 + Vector3.up * (wainscot + 0.5f), along * length, inward * 0.12f, Vector3.up);
+            Rect(look.railWood, 0, length, RoomHeight - 0.7f, RoomHeight, 0.1f);  // crown molding
 
             if (i == 1) // cue rack in the middle of the wall behind the table (default camera looks toward +x)
             {
@@ -105,8 +128,8 @@ public static partial class LevelBuilder
                     Rect(CueDark, s - 0.09f, s + 0.09f, 2.2f, 6.2f, 0.16f);
                     Rect(CueLight, s - 0.07f, s + 0.07f, 6.2f, 11.6f, 0.16f);
                 }
-                Rect(RailWood, c - 2.2f, c + 2.2f, 2, 2.6f, 0.2f);
-                Rect(RailWood, c - 2.2f, c + 2.2f, 10.6f, 11.2f, 0.2f);
+                Rect(look.railWood, c - 2.2f, c + 2.2f, 2, 2.6f, 0.2f);
+                Rect(look.railWood, c - 2.2f, c + 2.2f, 10.6f, 11.2f, 0.2f);
                 continue;
             }
             // paintings: gold frame, three bands of color
@@ -115,7 +138,7 @@ public static partial class LevelBuilder
             {
                 float c = length * (p + 0.5f) / count, h = 11.5f;
                 var colors = Paintings[painting++ % Paintings.Length];
-                Rect(RugBorder, c - 2.3f, c + 2.3f, h - 1.8f, h + 1.8f, 0.1f);
+                Rect(look.rugBorder, c - 2.3f, c + 2.3f, h - 1.8f, h + 1.8f, 0.1f);
                 Rect(colors[0], c - 1.9f, c + 1.9f, h - 0.2f, h + 1.4f, 0.14f);
                 Rect(colors[1], c - 1.9f, c + 1.9f, h - 0.8f, h - 0.2f, 0.14f);
                 Rect(colors[2], c - 1.9f, c + 1.9f, h - 1.4f, h - 0.8f, 0.14f);
@@ -132,6 +155,7 @@ public static partial class LevelBuilder
         var holder = new GameObject("Lamps");
         holder.transform.SetParent(lv.root, false);
         holder.AddComponent<LampHider>();
+        Palette["LampShade"] = look.lampShade; // the Lamp model's shade (read when it is spawned)
         var glow = Mat("LampGlow", LampGlowColor);
         glow.EnableKeyword("_EMISSION");
         glow.SetColor("_EmissionColor", LampGlowColor * 1.5f);
@@ -139,7 +163,7 @@ public static partial class LevelBuilder
         {
             float t = span * ((i + 0.5f) / lamps - 0.5f);
             var at = b.center + (alongX ? Vector3.right : Vector3.forward) * t;
-            Visual("Lamp", PrimitiveType.Cylinder, new Vector3(at.x, LampY + 0.8f, at.z), new Vector3(2.4f, 1.6f, 2.4f), Quaternion.identity, LampShadeColor, holder.transform);
+            Visual("Lamp", PrimitiveType.Cylinder, new Vector3(at.x, LampY + 0.8f, at.z), new Vector3(2.4f, 1.6f, 2.4f), Quaternion.identity, look.lampShade, holder.transform);
             Visual("LampRod", PrimitiveType.Cube, new Vector3(at.x, (LampY + 1.6f + y1) / 2, at.z), new Vector3(0.08f, y1 - LampY - 1.6f, 0.08f), Quaternion.identity, BrassColor, holder.transform);
             var light = new GameObject("LampLight").AddComponent<Light>();
             light.transform.SetParent(holder.transform, false);

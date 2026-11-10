@@ -6,7 +6,7 @@ using UnityEngine.InputSystem;
 // Turn flow + HUD. Creates itself when Play starts, so no scene setup is needed.
 public class GameManager : MonoBehaviour
 {
-    enum State { Menu, Aiming, Rolling, GameOver, Multiplayer }
+    enum State { Menu, Aiming, Rolling, GameOver, Multiplayer, Editor }
 
     public int levelIndex = 1;
 
@@ -14,6 +14,12 @@ public class GameManager : MonoBehaviour
     CueController cueCtl;
     GameUI ui;
     MultiplayerGame mp;
+    LevelEditor editor;
+
+    // a user level (LevelEditor) played instead of levelNN: its text, name and where to go when leaving it; its goal is always the 8
+    string customText, customName;
+    System.Action customBack;
+    int Goal => customText != null ? 8 : Worlds.BallOf(levelIndex);
     List<int> levels; // indices of the levelNN files in Resources/Levels, sorted
     Ball cue;
     State state;
@@ -22,6 +28,8 @@ public class GameManager : MonoBehaviour
 
     // stats of the current level, across restarts; shots only of the current run (a restart clears them)
     int attempts, shots;
+    int fouls, foulsLeft; // the level's "falli" line; left in this run (a restart gives them all back)
+    readonly Dictionary<int, Vector3> startSpot = new(); // cue and level ball where the level starts them (back there after a forgiven foul)
     float levelStart;
 
     // per-shot record
@@ -98,6 +106,10 @@ public class GameManager : MonoBehaviour
         ui.onHost = () => mp.Host(LevelBuilder.GoalToEight(Resources.Load<TextAsset>($"Levels/level{levels.FirstOrDefault():00}")?.text, Worlds.BallOf(levels.FirstOrDefault())));
         ui.onHostPool = () => mp.Host(Resources.Load<TextAsset>("PoolTable")?.text, pool: true);
         ui.onJoin = mp.Join;
+        editor = gameObject.AddComponent<LevelEditor>();
+        editor.game = this;
+        editor.ui = ui;
+        ui.onCreate = editor.ShowList;
         levels = Resources.LoadAll<TextAsset>("Levels")
             .Select(t => t.name.StartsWith("level") && int.TryParse(t.name.Substring(5), out int i) ? i : 0)
             .Where(i => i > 0).OrderBy(i => i).ToList();
@@ -108,6 +120,7 @@ public class GameManager : MonoBehaviour
 
     void ShowMenu()
     {
+        if (customText != null) { ExitCustom(); return; }
         message = null;
         SetState(State.Menu);
         ui.ShowLevels(levelIndex); // selecting a ball calls Preview
@@ -158,9 +171,11 @@ public class GameManager : MonoBehaviour
         cam.SetPositionAndRotation(Vector3.Lerp(cam.position, pos, k), Quaternion.Slerp(cam.rotation, rot, k));
     }
 
-    public static void ApplyTheme(int index)
+    public static void ApplyTheme(int index) => ApplyWorld(Worlds.WorldOf(index));
+
+    public static void ApplyWorld(int world)
     {
-        var t = Worlds.ThemeOf(Worlds.WorldOf(index));
+        var t = Worlds.ThemeOf(world);
         LevelBuilder.SetTheme(t);
         var cam = Camera.main;
         cam.clearFlags = CameraClearFlags.SolidColor;
@@ -182,21 +197,23 @@ public class GameManager : MonoBehaviour
 
     void Load(int index)
     {
-        var text = Resources.Load<TextAsset>($"Levels/level{index:00}");
-        if (!text)
+        var asset = customText != null ? null : Resources.Load<TextAsset>($"Levels/level{index:00}");
+        string text = customText ?? (asset ? asset.text : null), name = customName ?? (asset ? asset.name : null);
+        if (text == null)
         {
             ShowMenu();
             return;
         }
         if (level != null) Destroy(level.root.gameObject);
         levelIndex = index;
-        ApplyTheme(index);
-        level = LevelBuilder.Build(text.text, text.name);
+        if (customText != null) ApplyWorld(Mathf.Max(0, LevelBuilder.ThemeLine(text)));
+        else ApplyTheme(index);
+        level = LevelBuilder.Build(text, name);
         LevelBuilder.Room(level);
         cue = level.balls.FirstOrDefault(b => b.number == 0);
         if (!cue)
         {
-            message = $"{text.name}: manca la palla bianca (0)";
+            message = $"{name}: manca la palla bianca (0)";
             SetState(State.GameOver);
             return;
         }
@@ -207,9 +224,50 @@ public class GameManager : MonoBehaviour
         cueCtl.guideHit = false; // only the cue ball's line
         attempts++;
         shots = 0;
+        foulsLeft = fouls = LevelBuilder.FoulsOf(text);
+        startSpot.Clear();
+        foreach (var b in level.balls)
+            if (b.number == 0 || b.number == Goal) startSpot[b.number] = b.transform.position;
         message = null;
         SetupCamera();
         SetState(State.Aiming);
+    }
+
+    /// <summary>Plays a user level (goal: the 8); leaving it (menu, M, pause > Esci) destroys it and calls back.</summary>
+    public void PlayCustom(string text, string name, System.Action back)
+    {
+        customText = text;
+        customName = name;
+        customBack = back;
+        StartLevel(0);
+    }
+
+    void ExitCustom()
+    {
+        var back = customBack;
+        customText = customName = null;
+        customBack = null;
+        message = null;
+        if (level != null) Destroy(level.root.gameObject);
+        level = null;
+        SetState(State.Menu);
+        back?.Invoke();
+    }
+
+    /// <summary>The level editor takes the camera and the screen: no table, no game input.</summary>
+    public void EnterEditor()
+    {
+        if (level != null) Destroy(level.root.gameObject);
+        level = null;
+        message = null;
+        SetState(State.Editor);
+    }
+
+    /// <summary>Back to the menu with a level turning behind it.</summary>
+    public void BackToMenu()
+    {
+        SetState(State.Menu);
+        Preview(levelIndex > 0 ? levelIndex : levels.FirstOrDefault());
     }
 
     void SetupCamera()
@@ -245,7 +303,7 @@ public class GameManager : MonoBehaviour
         cueCtl.enabled = false;
         if (cueCtl.orbit) cueCtl.orbit.enabled = false;
         Cursor.lockState = CursorLockMode.None;
-        ui.ShowPause(() => Pause(false), () => { Pause(false); Load(levelIndex); }, () => { Pause(false); ShowMenu(); });
+        ui.ShowPause(() => Pause(false), () => { Pause(false); Load(levelIndex); }, () => { Pause(false); ShowMenu(); }, customText != null ? "Esci" : "Livelli");
     }
 
     void OnShot()
@@ -261,7 +319,7 @@ public class GameManager : MonoBehaviour
     void Update()
     {
         ui.SetHint(state == State.Aiming && !paused && !(cueCtl.orbit && cueCtl.orbit.Free) ? Hint() : null);
-        if (state == State.Multiplayer) return; // MultiplayerGame drives
+        if (state is State.Multiplayer or State.Editor) return; // MultiplayerGame / LevelEditor drive
         if (state == State.Menu) { PreviewCamera(); return; }
         var kb = Keyboard.current;
         // Esc with the right button held cancels the shot (CueController); otherwise it opens/closes the pause menu
@@ -292,7 +350,7 @@ public class GameManager : MonoBehaviour
         if (state != State.Rolling) return;
 
         // slow motion while the level's ball rolls into a pocket (single player only: online the clock is the host's)
-        var black = level.balls.FirstOrDefault(b => b.number == Worlds.BallOf(levelIndex));
+        var black = level.balls.FirstOrDefault(b => b.number == Goal);
         float slow = black && Juice.Approach(level, black) > 0 ? Juice.SlowScale : 1;
         Time.timeScale = Mathf.MoveTowards(Time.timeScale, slow, Time.unscaledDeltaTime * 4);
 
@@ -310,8 +368,9 @@ public class GameManager : MonoBehaviour
 
     void EndShot()
     {
-        var o = Rules.Evaluate(firstHit, potted, lost, target: Worlds.BallOf(levelIndex));
-        if (o.restart)
+        var o = Rules.Evaluate(firstHit, potted, lost, target: Goal);
+        bool forgiven = o.restart && Rules.SpendFoul(ref foulsLeft);
+        if (o.restart && !forgiven)
         {
             Sfx.Play(Sfx.Kind.Fail, 1);
             Load(levelIndex);
@@ -319,6 +378,19 @@ public class GameManager : MonoBehaviour
             return;
         }
         message = null;
+        if (forgiven) // the run goes on from here; without the cue or the level ball it couldn't
+        {
+            Sfx.Play(Sfx.Kind.Fail, 1);
+            message = o.message + $"\nFallo concesso: si continua (falli rimasti: {foulsLeft})";
+            foreach (var b in level.balls)
+                if (!b.gameObject.activeSelf && startSpot.TryGetValue(b.number, out var spot))
+                {
+                    // shortcut: no check for a ball sitting on the spot (the physics pushes them apart); find a free spot if it shows
+                    b.Stop();
+                    b.transform.position = spot;
+                    b.gameObject.SetActive(true);
+                }
+        }
 
         // no restart: object balls that left the table (potted or lost) are simply gone
         foreach (var b in level.balls.Where(b => !b.gameObject.activeSelf).ToList())
@@ -338,6 +410,13 @@ public class GameManager : MonoBehaviour
     void Win()
     {
         SetState(State.GameOver);
+        if (customText != null) // user level: no records, no unlocks
+        {
+            int customPar = LevelBuilder.ParOf(customText);
+            Sfx.Play(Rules.Crown(shots, customPar) ? Sfx.Kind.Crown : Sfx.Kind.Win, 1);
+            ui.ShowCustomResults(customName, shots, customPar, attempts, Time.time - levelStart, () => StartLevel(0), ShowMenu);
+            return;
+        }
         bool first = !Completed(levelIndex), hadCrown = Crown(levelIndex);
         int best = Best(levelIndex);
         var locked = Enumerable.Range(0, BallArt.Skins.Length).Where(s => !BallArt.Unlocked(s)).ToList();
@@ -356,10 +435,10 @@ public class GameManager : MonoBehaviour
         ui.ShowResults(levelIndex, NextLevel(), shots, Par(levelIndex), attempts, Time.time - levelStart, string.Join("\n", notes));
     }
 
-    int NextLevel() => levels.FirstOrDefault(i => i > levelIndex);
+    int NextLevel() => customText != null ? 0 : levels.FirstOrDefault(i => i > levelIndex);
 
     // onboarding: only in the levels that introduce a control ([KEY] = key cap, GameUI.SetHint)
-    string Hint() => levelIndex switch
+    string Hint() => customText != null ? null : levelIndex switch
     {
         1 => cueCtl.Pulling ? "Rilascia [DESTRO] per tirare" : "Tieni [DESTRO] e tira il mouse indietro per caricare il tiro",
         2 => cueCtl.Pulling ? "Tieni anche [SINISTRO] e muovi il mouse: effetto sulla bianca"
@@ -372,14 +451,15 @@ public class GameManager : MonoBehaviour
     // shortcut: IMGUI HUD for the prototype; replace with a uGUI/UI Toolkit canvas when the art pass starts.
     void OnGUI()
     {
-        if (state is State.Menu or State.Multiplayer || paused) return;
+        if (state is State.Menu or State.Multiplayer or State.Editor || paused) return;
         var style = new GUIStyle(GUI.skin.label) { fontSize = 22, normal = { textColor = Color.white } };
-        int par = Par(levelIndex); // shortcut: reads the level file every frame, fine while the HUD is IMGUI
-        GUI.Label(new Rect(16, 12, 1600, 32), $"Livello {levelIndex}   Tiri {shots}{(par > 0 ? $" (corona: {par})" : "")}   Obiettivo: manda in buca la {Worlds.BallOf(levelIndex)} (non perdere la bianca o la {Worlds.BallOf(levelIndex)}, colpisci sempre una palla)", style);
+        bool custom = customText != null;
+        int par = custom ? LevelBuilder.ParOf(customText) : Par(levelIndex); // shortcut: reads the level file every frame, fine while the HUD is IMGUI
+        GUI.Label(new Rect(16, 12, 1600, 32), $"{(custom ? customName : $"Livello {levelIndex}")}   Tiri {shots}{(par > 0 ? $" (corona: {par})" : "")}{(fouls > 0 ? $"   Falli {foulsLeft}/{fouls}" : "")}   Obiettivo: manda in buca la {Goal} (non perdere la bianca o la {Goal}, colpisci sempre una palla)", style);
         if (!string.IsNullOrEmpty(message)) GUI.Label(new Rect(16, 44, 1200, 120), message, style);
         style.fontSize = 16;
         GUI.Label(new Rect(16, Screen.height - 52, 1400, 48),
             "Sinistro + mouse = gira intorno / mira (Shift = fine, frecce = ritocco, Ctrl = solo camera)   Rotella = zoom   T = vista dall'alto   F = volo libero (WASD, Q/E, Shift)\n" +
-            "Destro tenuto + mouse indietro = potenza (+ sinistro = sposta l'effetto), rilascia = tiro, Esc = annulla / pausa   R = restart   M = menu", style);
+            "Destro tenuto + mouse indietro = potenza (+ sinistro = sposta l'effetto), rilascia = tiro, Esc = annulla / pausa   R = restart   M = " + (custom ? "esci" : "menu"), style);
     }
 }

@@ -5,8 +5,9 @@ public static class Worlds
 {
     public const int LevelsPerWorld = 15;
 
-    // the room around the table (LevelBuilder.Room): Open = just a floor fading into the sky
-    public enum Hall { Open, Classic }
+    // the room around the table (LevelBuilder.Room): Open = just a floor fading into the sky; Classic = pool room;
+    // Lagoon = the same pool room in world 2's colors (LevelBuilder.RoomLook)
+    public enum Hall { Open, Classic, Lagoon }
 
     public struct Theme
     {
@@ -22,7 +23,8 @@ public static class Worlds
             hall = Hall.Classic },
         // world 2 (the new modules): teal felt, so the blue portal and the ice stand out (production/levels/mondo-2/layout.md)
         new() { name = "Laguna", felt = new(0.1f, 0.45f, 0.48f), cushion = new(0.07f, 0.33f, 0.36f), wood = new(0.93f, 0.88f, 0.78f),
-            darkWood = new(0.5f, 0.4f, 0.3f), room = new(0.96f, 0.8f, 0.55f), sky = new(0.55f, 0.82f, 0.95f), accent = new(1f, 0.62f, 0.25f) },
+            darkWood = new(0.5f, 0.4f, 0.3f), room = new(0.96f, 0.8f, 0.55f), sky = new(0.55f, 0.82f, 0.95f), accent = new(1f, 0.62f, 0.25f),
+            hall = Hall.Lagoon },
         new() { name = "Oceano", felt = new(0.1f, 0.42f, 0.78f), cushion = new(0.07f, 0.32f, 0.62f), wood = new(0.93f, 0.88f, 0.78f),
             darkWood = new(0.55f, 0.47f, 0.38f), room = new(0.85f, 0.78f, 0.6f), sky = new(0.45f, 0.75f, 0.92f), accent = new(0.3f, 0.85f, 1f) },
         new() { name = "Tramonto", felt = new(0.85f, 0.3f, 0.32f), cushion = new(0.68f, 0.2f, 0.25f), wood = new(0.3f, 0.16f, 0.25f),

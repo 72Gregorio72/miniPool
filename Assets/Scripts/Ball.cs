@@ -16,6 +16,7 @@ public class Ball : MonoBehaviour
     public System.Action<Ball> onCueHit; // set on the cue ball only
     public float beltSpeed;             // speed of the last belt it was on
     public bool onBelt, carried;        // on a conveyor this step / carried somewhere by it over the last frame
+    public bool windBlocked;            // in a wind fan's air but pressed against something in its direction (set each frame)
 
     public bool IsMoving => v != Vector3.zero || w != Vector3.zero || carried;
 

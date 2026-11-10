@@ -11,45 +11,7 @@ using UnityEngine;
 public class LevelEditorWindow : EditorWindow
 {
     const string Dir = "Assets/Resources/Levels", PreviewName = "LevelEditorPreview";
-    const int RotateStep = 15; // degrees per R press (Shift+R turns back)
-
-    struct Brush
-    {
-        public string label;
-        public char c;
-        public Color color;
-        public Brush(string label, char c, Color color) { this.label = label; this.c = c; this.color = color; }
-    }
-
-    static readonly Brush[] Brushes =
-    {
-        new("Panno", '.', new Color(0.2f, 0.7f, 0.35f)),
-        new("Panno+sponde", LevelBuilder.FeltWithRails, new Color(0.3f, 0.75f, 0.45f)),
-        new("Sponda", '#', new Color(0.75f, 0.45f, 0.25f)),
-        new("Sponda diag. (R)", LevelBuilder.DiagRail, new Color(0.75f, 0.45f, 0.25f)),
-        new("Buca", 'O', new Color(0.25f, 0.25f, 0.25f)),
-        new("Bianca", '0', Color.white),
-        new("Grigia", '*', new Color(0.55f, 0.55f, 0.57f)), // grey balls: as many as you like (BallArt.Grey)
-        new("Triangolo", 'R', new Color(1f, 0.85f, 0.3f)),
-        new("Blocco", 'P', new Color(0.6f, 0.55f, 0.7f)),
-        new("Spine", 'X', new Color(1f, 0.3f, 0.3f)),
-        new("Ventola", 'J', new Color(0.4f, 0.6f, 1f)),
-        new("Spinta (R)", '>', new Color(1f, 0.7f, 0.3f)),
-        new("Rampa (R)", LevelBuilder.Ramp, new Color(0.3f, 0.75f, 0.45f)),
-        new("Portale blu", LevelBuilder.PortalBlue, new Color(0.3f, 0.6f, 1f)),
-        new("Portale aranc.", LevelBuilder.PortalOrange, new Color(1f, 0.6f, 0.2f)),
-        new("Ghiaccio", 'I', new Color(0.75f, 0.9f, 1f)),
-        new("Sabbia", 'M', new Color(0.95f, 0.8f, 0.5f)),
-        new("Tombino", 'W', new Color(0.5f, 0.5f, 0.55f)),
-        new("Pulsante", 'K', new Color(1f, 0.35f, 0.35f)),
-        new("Cancello", LevelBuilder.Gate, new Color(1f, 0.8f, 0.3f)),
-        new("Muro a tempo", LevelBuilder.TimedWall, new Color(0.7f, 0.5f, 1f)),
-        new("Respingente", 'Q', new Color(1f, 0.45f, 0.7f)),
-        new("Nastro (R)", 'N', new Color(0.5f, 0.5f, 0.55f)),
-        new("Calamita", 'Z', new Color(1f, 0.3f, 0.3f)),
-        new("Piattaforma", LevelBuilder.PlatformTile, new Color(0.4f, 0.8f, 0.65f)),
-        new("Gomma", ' ', new Color(1f, 0.4f, 0.4f)),
-    };
+    const int RotateStep = LevelDraft.RotateStep; // degrees per R press (Shift+R turns back)
 
     static readonly Dictionary<string, Texture> icons = new();
 
@@ -88,25 +50,19 @@ public class LevelEditorWindow : EditorWindow
         c == ' ' ? null : c == LevelBuilder.FeltWithRails ? Icon("###\n#.#\n###")
             : Icon(LevelBuilder.IsOriented(c) ? $"...\n.{c}.\n...\n---\n> 1 1 {boostAngle}" : $"...\n.{c}.\n...");
 
-    const string BallChars = "123456789ABCDEF";
-
-    const string DefaultTable =
-        "O########O########O\n#.................#\n#.................#\n#.................#\n#.................#\n" +
-        "#.................#\n#.................#\n#.................#\n#.................#\n#.................#\nO########O########O\n---\n0 12 15\n"; // cue ball on tile (4, 5)
-
     [SerializeField] int level = 1;
     [SerializeField] string draft;          // survives script reloads
     [SerializeField] Vector2Int draftMin;
-    [SerializeField] int par;               // fewest shots to win the level (crown); 0 = not set
     [SerializeField] bool dirty, painting = true;
     [SerializeField] char brush = '#';
     [SerializeField] int boostAngle = 90;
     [SerializeField] int floor;             // painted tiles go on this floor (y = floor * FloorStep)
+    [SerializeField] bool stack;            // "Sovrapposizione": a module painted on another goes on top of it instead of replacing it
 
-    Dictionary<Vector2Int, char> cells = new();
-    Dictionary<Vector2Int, char> objects = new(); // key = world sub cell (LevelBuilder.Sub per tile)
-    Dictionary<Vector2Int, int> angles = new();   // oriented tiles: degrees clockwise from the far side
-    Dictionary<Vector2Int, int> floors = new();   // raised cells
+    const string BallChars = LevelDraft.BallChars;
+    const string DefaultTable = LevelDraft.DefaultTable;
+    const char MoveTool = LevelDraft.MoveTool, CopyTool = LevelDraft.CopyTool;
+    LevelDraft d = new(); // the level being edited (shared with the in-game editor, LevelEditor)
     GameObject preview;
     Vector2Int? rectStart;
     Vector2 scroll;
@@ -136,7 +92,7 @@ public class LevelEditorWindow : EditorWindow
 
     void LoadPiece(string name)
     {
-        if (Moving) CancelClip();
+        if (d.Moving) d.CancelClip();
         piece = name;
         var path = CurrentPath;
         if (File.Exists(path)) SetText(File.ReadAllText(path), Vector2Int.zero);
@@ -211,141 +167,17 @@ public class LevelEditorWindow : EditorWindow
         if (s == PlayModeStateChange.EnteredEditMode) Rebuild();
     }
 
-    void SetText(string text, Vector2Int min)
-    {
-        objects = new Dictionary<Vector2Int, char>();
-        angles = new Dictionary<Vector2Int, int>();
-        floors = new Dictionary<Vector2Int, int>();
-        cells = LevelBuilder.ToCells(text, min, objects, angles, floors);
-        par = LevelBuilder.ParOf(text);
-    }
+    void SetText(string text, Vector2Int min) => d.SetText(text, min);
 
     // levels only: par = fewest shots to win (crown), saved as the "tiri N" line
-    string GetText(out Vector2Int min)
-    {
-        var text = LevelBuilder.ToText(cells, out min, objects, angles, floors);
-        if (par <= 0 || EditingPiece) return text;
-        return text + (text.Split('\n').Contains("---") ? "" : "---\n") + $"{LevelBuilder.ParTag} {par}\n";
-    }
+    string GetText(out Vector2Int min) => d.GetText(out min, !EditingPiece);
 
-    // ---------- Sposta / Copia-Incolla tools ----------
-    const char MoveTool = '\u0001', CopyTool = '\u0002'; // brush values that aren't tiles
-
-    // a grabbed piece of level, keyed relative to its anchor tile (objects: relative sub cells)
-    class Clip
-    {
-        public readonly Dictionary<Vector2Int, char> cells = new(), objects = new();
-        public readonly Dictionary<Vector2Int, int> angles = new(), floors = new();
-        public Vector2Int min, max; // tile footprint, relative
-        public bool fine;   // just one object: follows the fine grid
-        public bool single; // one tile picked up: it takes the floor of where it's dropped
-    }
-
-    Clip clip;                                   // kept across levels and pieces: copy here, paste there
-    (Vector2Int min, Vector2Int max)? cut;       // Sposta: source tiles cleared when dropped
-    Vector2Int? cutObject;                       // Sposta: source object removed when dropped
-    bool Tool => brush is MoveTool or CopyTool;
-    bool Moving => cut.HasValue || cutObject.HasValue;
-
-    // what Sposta leaves behind: obstacles become felt, the table itself (felt, rails, pockets) stays
-    static bool Obstacle(char c) => c is not ('.' or '#' or 'O' or LevelBuilder.DiagRail);
-
-    static Vector2Int TileOf(Vector2Int sub) => new(Mathf.RoundToInt(sub.x / (float)LevelBuilder.Sub), Mathf.RoundToInt(sub.y / (float)LevelBuilder.Sub));
+    bool Tool => LevelDraft.IsTool(brush);
 
     void SetBrush(char c)
     {
-        if (c != brush && Moving) CancelClip(); // a pick-up never survives a brush change
+        if (c != brush && d.Moving) d.CancelClip(); // a pick-up never survives a brush change
         brush = c;
-    }
-
-    void CancelClip()
-    {
-        clip = null;
-        cut = null;
-        cutObject = null;
-    }
-
-    Clip Grab(Vector2Int a, Vector2Int b)
-    {
-        var min = Vector2Int.Min(a, b);
-        var max = Vector2Int.Max(a, b);
-        var center = min + (max - min) / 2;
-        var c = new Clip { min = min - center, max = max - center };
-        for (int x = min.x; x <= max.x; x++)
-            for (int z = min.y; z <= max.y; z++)
-            {
-                var k = new Vector2Int(x, z);
-                if (!cells.TryGetValue(k, out var t)) continue;
-                c.cells[k - center] = t;
-                if (angles.TryGetValue(k, out int an)) c.angles[k - center] = an;
-                if (floors.TryGetValue(k, out int f)) c.floors[k - center] = f;
-            }
-        foreach (var o in objects)
-        {
-            var t = TileOf(o.Key);
-            if (t.x >= min.x && t.x <= max.x && t.y >= min.y && t.y <= max.y) c.objects[o.Key - center * LevelBuilder.Sub] = o.Value;
-        }
-        return c;
-    }
-
-    // end of a selection drag: Copia copies the area; Sposta picks up the object / obstacle clicked, or the obstacles of the area
-    void Select(Vector2Int a, Vector2Int b)
-    {
-        CancelClip();
-        if (brush == CopyTool) { clip = Grab(a, b); return; }
-        if (a == b)
-        {
-            foreach (var o in objects)
-                if (Dist(o.Key, hoverSub) < 0.4f)
-                {
-                    clip = new Clip { fine = true };
-                    clip.objects[Vector2Int.zero] = o.Value;
-                    cutObject = o.Key;
-                    return;
-                }
-            if (!cells.TryGetValue(a, out var t) || !Obstacle(t)) return; // nothing to move here
-        }
-        clip = Grab(a, b);
-        clip.single = a == b;
-        cut = (Vector2Int.Min(a, b), Vector2Int.Max(a, b));
-    }
-
-    // drops / pastes the clip at the mouse (Sposta also clears where it came from); used by the hover preview too
-    bool Paste()
-    {
-        if (clip == null || rectStart.HasValue) return false;
-        const int S = LevelBuilder.Sub;
-        if (cut.HasValue)
-        {
-            var (cmin, cmax) = cut.Value;
-            for (int x = cmin.x; x <= cmax.x; x++)
-                for (int z = cmin.y; z <= cmax.y; z++)
-                {
-                    var k = new Vector2Int(x, z);
-                    if (cells.TryGetValue(k, out var t) && Obstacle(t)) { cells[k] = '.'; angles.Remove(k); }
-                }
-            RemoveObjects(o => { var t = TileOf(o.Key); return t.x >= cmin.x && t.x <= cmax.x && t.y >= cmin.y && t.y <= cmax.y; });
-        }
-        if (cutObject is Vector2Int co) objects.Remove(co);
-        if (clip.fine)
-        {
-            foreach (var o in clip.objects) PlaceObject(hoverSub + o.Key, o.Value);
-            return true;
-        }
-        var at = hoverCell;
-        foreach (var kv in clip.cells)
-        {
-            var k = at + kv.Key;
-            if (kv.Value is LevelBuilder.PortalBlue or LevelBuilder.PortalOrange) // one of each per level: the old one goes
-                foreach (var old in cells.Where(c => c.Value == kv.Value && c.Key != k).Select(c => c.Key).ToList()) cells[old] = '.';
-            cells[k] = kv.Value;
-            if (clip.angles.TryGetValue(kv.Key, out int an)) angles[k] = an; else angles.Remove(k);
-            if (clip.single) continue;
-            if (clip.floors.TryGetValue(kv.Key, out int f)) floors[k] = f; else floors.Remove(k);
-        }
-        RemoveObjects(o => clip.cells.ContainsKey(TileOf(o.Key) - at));
-        foreach (var o in clip.objects) objects[at * S + o.Key] = o.Value;
-        return true;
     }
 
     void ToolButton(string label, char c)
@@ -356,9 +188,9 @@ public class LevelEditorWindow : EditorWindow
     // R turns an oriented brush clockwise, Q (or Shift+R) back (Scene view or this window); PageUp / PageDown change the floor
     bool HandleRotate(Event e)
     {
-        if (e.type == EventType.KeyDown && e.keyCode == KeyCode.Escape && clip != null)
+        if (e.type == EventType.KeyDown && e.keyCode == KeyCode.Escape && d.clip != null)
         {
-            CancelClip();
+            d.CancelClip();
             e.Use();
             if (hovering) ShowHover(true);
             Repaint();
@@ -425,8 +257,10 @@ public class LevelEditorWindow : EditorWindow
         EditorGUILayout.LabelField($"File: {CurrentPath}", EditorStyles.miniLabel);
         if (!EditingPiece)
         {
-            int p = Mathf.Max(0, EditorGUILayout.IntField(new GUIContent("Tiri minimi (corona)", "Con quanti tiri si può finire il livello: chi ci riesce prende la corona. 0 = nessuna corona"), par));
-            if (p != par) { par = p; dirty = true; draft = GetText(out draftMin); }
+            int p = Mathf.Max(0, EditorGUILayout.IntField(new GUIContent("Tiri minimi (corona)", "Con quanti tiri si può finire il livello: chi ci riesce prende la corona. 0 = nessuna corona"), d.par));
+            if (p != d.par) { d.par = p; dirty = true; draft = GetText(out draftMin); }
+            int fl = Mathf.Max(0, EditorGUILayout.IntField(new GUIContent("Falli concessi", "Quanti falli si possono fare in un tentativo: ogni fallo annulla il tiro invece di ricominciare. Finiti quelli, il fallo dopo fa ricominciare il livello (e i falli tornano tutti). 0 = ogni fallo ricomincia"), d.fouls));
+            if (fl != d.fouls) { d.fouls = fl; dirty = true; draft = GetText(out draftMin); }
         }
         if (EditingPiece)
             EditorGUILayout.HelpBox("Pezzo online: chiudilo con sponde. Quando si attacca, le sue sponde sovrapposte a quelle del tavolo si aprono dove c'è panno da entrambi i lati. Niente palle. Il centro del pezzo segue il mouse.", MessageType.None);
@@ -434,6 +268,9 @@ public class LevelEditorWindow : EditorWindow
         bool wasPainting = painting;
         painting = EditorGUILayout.ToggleLeft("Disegna nella Scene view", painting);
         if (wasPainting && !painting) EndHover();
+        stack = EditorGUILayout.ToggleLeft(new GUIContent("Sovrapposizione moduli",
+            "Acceso: un modulo disegnato su un altro modulo ci va sopra (fino a " + LevelBuilder.MaxStack + " per casella) e si muove con lui " +
+            "(spine su un muro a tempo salgono e scendono col muro); la gomma toglie solo quello in cima. Spento: il modulo nuovo sostituisce quelli che c'erano."), stack);
         EditorGUILayout.HelpBox("Click / trascina = disegna   Shift + trascina = rettangolo (tile)\nCtrl + click = cancella   R / Q = ruota (spinta, rampa, portali, nastro, piattaforma)   Alt = naviga la scena\n" +
             "Piano: i tile disegnati vanno sul piano scelto (PagSu / PagGiù); la rampa sale di un piano verso la sua freccia.\n" +
             "Palle e triangolo stanno sopra i tile, su una griglia 3 volte più fine.\nIl riquadro azzurro è l'anteprima: il livello si vede già come sarebbe, ma non è ancora disegnato.", MessageType.None);
@@ -443,10 +280,11 @@ public class LevelEditorWindow : EditorWindow
         {
             ToolButton("Sposta", MoveTool);
             ToolButton("Copia / Incolla", CopyTool);
-            if (clip != null && GUILayout.Button("Svuota (Esc)", GUILayout.Height(24))) CancelClip();
+            if (d.clip != null && GUILayout.Button("Svuota (Esc)", GUILayout.Height(24))) d.CancelClip();
         }
+        var clip = d.clip;
         if (clip != null)
-            EditorGUILayout.LabelField(clip.fine ? "In mano: una palla" : $"{(Moving ? "In mano" : "Appunti")}: {clip.max.x - clip.min.x + 1}×{clip.max.y - clip.min.y + 1} tile", EditorStyles.miniLabel);
+            EditorGUILayout.LabelField(clip.fine ? "In mano: una palla" : $"{(d.Moving ? "In mano" : "Appunti")}: {clip.max.x - clip.min.x + 1}×{clip.max.y - clip.min.y + 1} tile", EditorStyles.miniLabel);
         if (brush == MoveTool)
             EditorGUILayout.HelpBox("Sposta: clic su un ostacolo o una palla per prenderlo (trascina = tutti gli ostacoli di un'area), poi clic dove lasciarlo. " +
                 "Dove era resta il panno: panno, sponde e buche non si spostano. Esc = annulla.", MessageType.None);
@@ -456,9 +294,10 @@ public class LevelEditorWindow : EditorWindow
 
         EditorGUILayout.LabelField("Tile e oggetti", EditorStyles.boldLabel);
         int perRow = Mathf.Max(1, (int)(position.width - 10) / 84);
-        for (int i = 0; i < Brushes.Length; i += perRow)
+        var brushes = LevelDraft.Brushes;
+        for (int i = 0; i < brushes.Length; i += perRow)
             using (new EditorGUILayout.HorizontalScope())
-                foreach (var b in Brushes.Skip(i).Take(perRow)) BrushButton(b);
+                foreach (var b in brushes.Skip(i).Take(perRow)) BrushButton(b);
         if (LevelBuilder.IsOriented(brush)) EditorGUILayout.LabelField($"Rotazione: {boostAngle}°" +
             (brush is LevelBuilder.Ramp or LevelBuilder.PlatformTile or LevelBuilder.DiagRail ? $" (usa {(Mathf.RoundToInt(boostAngle / 90f) * 90 % 360 + 360) % 360}°: solo multipli di 90)" : ""), EditorStyles.miniLabel);
         floor = EditorGUILayout.IntSlider("Piano (PagSu / PagGiù)", floor, 0, MaxFloor);
@@ -473,32 +312,17 @@ public class LevelEditorWindow : EditorWindow
             }
         GUI.backgroundColor = Color.white;
 
-        foreach (var warning in Validate()) EditorGUILayout.HelpBox(warning, MessageType.Warning);
+        foreach (var warning in d.Validate(EditingPiece ? 0 : Worlds.BallOf(level))) EditorGUILayout.HelpBox(warning, MessageType.Warning);
         EditorGUILayout.EndScrollView();
     }
 
-    void BrushButton(Brush b)
+    void BrushButton(LevelDraft.Brush b)
     {
         GUI.backgroundColor = b.color;
         var content = new GUIContent(b.label, BrushIcon(b.c));
         var style = new GUIStyle("Button") { imagePosition = ImagePosition.ImageAbove, fixedHeight = 64, fixedWidth = 80, fontSize = 10 };
         if (GUILayout.Toggle(brush == b.c, content, style)) SetBrush(b.c);
         GUI.backgroundColor = Color.white;
-    }
-
-    IEnumerable<string> Validate()
-    {
-        var all = cells.Values.Concat(objects.Values).ToList();
-        int cues = all.Count(c => c == '0');
-        if (cues != 1) yield return $"Serve esattamente una bianca (ora: {cues}).";
-        bool rack = all.Contains('R');
-        foreach (var g in all.Where(c => BallChars.IndexOf(c) >= 0).GroupBy(c => c))
-            if (g.Count() > 1 || rack) yield return $"Palla {System.Convert.ToInt32(g.Key.ToString(), 16)} presente più di una volta" + (rack ? " (il triangolo le contiene già)" : "");
-        int goal = Worlds.BallOf(level);
-        if (!EditingPiece && !rack && !all.Contains(BallChars[goal - 1])) yield return $"Manca la palla del livello: la {goal} (obiettivo da mandare in buca).";
-        if (!cells.Values.Contains('O')) yield return "Nessuna buca.";
-        if (cells.Values.Contains(LevelBuilder.PortalBlue) != cells.Values.Contains(LevelBuilder.PortalOrange)) yield return "Portale senza il suo compagno: servono il blu e l'arancione.";
-        if (cells.Values.Contains('G') && !cells.Values.Contains('K')) yield return "Cancello senza pulsante: resta sempre chiuso.";
     }
 
     void OnScene(SceneView sv)
@@ -513,8 +337,8 @@ public class LevelEditorWindow : EditorWindow
         if (e.type == EventType.Layout) HandleUtility.AddDefaultControl(id); // clicks paint instead of selecting
 
         var ray = HandleUtility.GUIPointToWorldRay(e.mousePosition);
-        if (!new Plane(Vector3.up, Vector3.up * FloorY).Raycast(ray, out float d)) return;
-        var hit = ray.GetPoint(d);
+        if (!new Plane(Vector3.up, Vector3.up * FloorY).Raycast(ray, out float dist)) return;
+        var hit = ray.GetPoint(dist);
         const int S = LevelBuilder.Sub;
         hoverCell = new Vector2Int(Mathf.RoundToInt(hit.x), Mathf.RoundToInt(hit.z));
         hoverSub = new Vector2Int(Mathf.RoundToInt(hit.x * S), Mathf.RoundToInt(hit.z * S));
@@ -529,16 +353,16 @@ public class LevelEditorWindow : EditorWindow
             if (e.type == EventType.MouseDown)
             {
                 GUIUtility.hotControl = id;
-                if (clip == null || e.shift) rectStart = hoverCell;
-                else if (Paste())
+                if (d.clip == null || e.shift) rectStart = hoverCell;
+                else if (d.Paste(hoverCell, hoverSub))
                 {
-                    if (brush == MoveTool) CancelClip();
+                    if (brush == MoveTool) d.CancelClip();
                     Changed();
                 }
             }
             else if (e.type == EventType.MouseUp && GUIUtility.hotControl == id)
             {
-                if (rectStart.HasValue) Select(rectStart.Value, hoverCell);
+                if (rectStart.HasValue) d.Select(brush, rectStart.Value, hoverCell, hoverSub);
                 rectStart = null;
                 GUIUtility.hotControl = 0;
                 Repaint();
@@ -551,17 +375,17 @@ public class LevelEditorWindow : EditorWindow
         {
             GUIUtility.hotControl = id;
             if (e.shift && !small) rectStart = hoverCell;
-            else if (Apply(small)) Changed();
+            else if (Apply()) Changed();
             e.Use();
         }
         else if (e.button == 0 && e.type == EventType.MouseDrag && GUIUtility.hotControl == id)
         {
-            if (!rectStart.HasValue && Apply(small)) Changed();
+            if (!rectStart.HasValue && Apply()) Changed();
             e.Use();
         }
         else if (e.button == 0 && e.type == EventType.MouseUp && GUIUtility.hotControl == id)
         {
-            bool changed = rectStart.HasValue && Apply(small);
+            bool changed = rectStart.HasValue && Apply();
             rectStart = null;
             GUIUtility.hotControl = 0;
             if (changed) Changed();
@@ -575,33 +399,24 @@ public class LevelEditorWindow : EditorWindow
     }
 
     // the brush applied at the hovered cell (or the Shift rectangle); returns whether anything changed
-    bool Apply(bool small)
-    {
-        if (Tool) return Paste();
-        char c = hoverErase ? ' ' : brush;
-        if (!small) return Paint(rectStart ?? hoverCell, hoverCell, c);
-        if (hoverErase) return RemoveObjects(o => Dist(o.Key, hoverSub) < 0.4f);
-        return PlaceObject(hoverSub, c);
-    }
+    bool Apply() => d.Apply(brush, hoverCell, hoverSub, rectStart, boostAngle, floor, stack, hoverErase);
 
     // rebuilds the preview as if the brush were applied where the mouse is, then puts the real level data back
     void ShowHover(bool force)
     {
         bool small = LevelBuilder.IsObject(brush);
-        var key = $"{(small || clip is { fine: true } ? hoverSub : hoverCell)} {rectStart} {brush} {boostAngle} {floor} {hoverErase} {cells.Count} {objects.Count} {dirty} {clip?.GetHashCode()}";
+        var key = $"{(small || d.clip is { fine: true } ? hoverSub : hoverCell)} {rectStart} {brush} {boostAngle} {floor} {stack} {hoverErase} {d.cells.Count} {d.objects.Count} {dirty} {d.clip?.GetHashCode()}";
         hovering = true;
         if (!force && key == hoverKey) return;
         hoverKey = key;
-        var c0 = new Dictionary<Vector2Int, char>(cells);
-        var o0 = new Dictionary<Vector2Int, char>(objects);
-        var a0 = new Dictionary<Vector2Int, int>(angles);
-        var f0 = new Dictionary<Vector2Int, int>(floors);
+        var real = d.GetText(out var realMin);
+        var o0 = new Dictionary<Vector2Int, char>(d.objects);
         bool wasGhost = hoverChanges;
-        hoverChanges = Apply(small);
+        hoverChanges = Apply();
         var lv = hoverChanges ? Rebuild() : null;
         // a ball exists once, so the brush takes it off its old spot: keep it visible there until the click
         if (lv != null && small)
-            foreach (var o in o0.Where(o => o.Value == brush && !objects.ContainsKey(o.Key)))
+            foreach (var o in o0.Where(o => o.Value == brush && !d.objects.ContainsKey(o.Key)))
             {
                 int n = ("0" + BallChars).IndexOf(o.Value);
                 if (n < 0) continue; // the rack is not a ball
@@ -611,10 +426,7 @@ public class LevelEditorWindow : EditorWindow
                 old.transform.SetParent(lv.root, true);
                 foreach (var t in old.GetComponentsInChildren<Transform>(true)) t.gameObject.hideFlags = HideFlags.DontSave | HideFlags.NotEditable;
             }
-        cells = c0;
-        objects = o0;
-        angles = a0;
-        floors = f0;
+        d.SetText(real, realMin); // the clip and the pick-up stay
         if (!hoverChanges && wasGhost) Rebuild(); // back to the real level
     }
 
@@ -630,6 +442,7 @@ public class LevelEditorWindow : EditorWindow
     // tinted box over the area the brush would change: the "not placed yet" filter
     void DrawHover(bool small)
     {
+        var clip = d.clip;
         var color = hoverErase ? new Color(1f, 0.25f, 0.25f) : Tool && (clip == null || rectStart.HasValue) ? new Color(1f, 0.85f, 0.3f) : new Color(0.3f, 0.85f, 1f);
         bool dropping = Tool && clip != null && !rectStart.HasValue; // box over the clip's footprint at the mouse
         if (dropping) small = clip.fine;
@@ -656,74 +469,8 @@ public class LevelEditorWindow : EditorWindow
         }
     }
 
-    static float Dist(Vector2Int a, Vector2Int b) => ((Vector2)(a - b)).magnitude / LevelBuilder.Sub;
-
-    bool PlaceObject(Vector2Int sub, char c)
-    {
-        if (objects.TryGetValue(sub, out var old) && old == c) return false;
-        // overlapping objects make way; balls and the rack exist once, so placing one moves it
-        RemoveObjects(o => Dist(o.Key, sub) < 2 * Ball.Radius - 1e-3f || (o.Value == c && c != '*'));
-        objects[sub] = c;
-        return true;
-    }
-
-    bool RemoveObjects(System.Func<KeyValuePair<Vector2Int, char>, bool> match)
-    {
-        var gone = objects.Where(match).Select(o => o.Key).ToList();
-        foreach (var k in gone) objects.Remove(k);
-        return gone.Count > 0;
-    }
-
-    // tiles only; objects stay on top of whatever tile is painted under them, erasing a tile removes them too
-    bool Paint(Vector2Int a, Vector2Int b, char c)
-    {
-        var min = Vector2Int.Min(a, b);
-        var max = Vector2Int.Max(a, b);
-        bool changed = false;
-        for (int x = min.x; x <= max.x; x++)
-            for (int z = min.y; z <= max.y; z++)
-            {
-                var k = new Vector2Int(x, z);
-                if (c == LevelBuilder.FeltWithRails)
-                {
-                    var before = new HashSet<Vector2Int>(cells.Keys);
-                    changed |= LevelBuilder.PaintFeltWithRails(cells, k);
-                    angles.Remove(k);
-                    changed |= SetFloor(k);
-                    foreach (var n in cells.Keys.Where(n => !before.Contains(n)).ToList()) SetFloor(n); // new rails: same floor
-                    continue;
-                }
-                if (c == ' ')
-                {
-                    changed |= cells.Remove(k);
-                    angles.Remove(k);
-                    floors.Remove(k);
-                    continue;
-                }
-                changed |= LevelBuilder.SetTile(cells, angles, k, c, boostAngle);
-                changed |= SetFloor(k);
-            }
-        if (c == ' ')
-        {
-            const float S = LevelBuilder.Sub;
-            changed |= RemoveObjects(o =>
-            {
-                var t = new Vector2Int(Mathf.RoundToInt(o.Key.x / S), Mathf.RoundToInt(o.Key.y / S));
-                return t.x >= min.x && t.x <= max.x && t.y >= min.y && t.y <= max.y;
-            });
-        }
-        return changed;
-    }
-
-    const int MaxFloor = 6;
+    const int MaxFloor = LevelDraft.MaxFloor;
     float FloorY => floor * LevelBuilder.FloorStep;
-
-    bool SetFloor(Vector2Int k)
-    {
-        if (floors.TryGetValue(k, out int f) ? f == floor : floor == 0) return false;
-        if (floor == 0) floors.Remove(k); else floors[k] = floor;
-        return true;
-    }
 
     void Changed()
     {
@@ -738,7 +485,7 @@ public class LevelEditorWindow : EditorWindow
     LevelBuilder.Level Rebuild()
     {
         DestroyPreview();
-        if (EditorApplication.isPlayingOrWillChangePlaymode || cells.Count == 0) return null;
+        if (EditorApplication.isPlayingOrWillChangePlaymode || d.cells.Count == 0) return null;
         LevelBuilder.SetTheme(Worlds.ThemeOf(Worlds.WorldOf(level)));
         var lv = LevelBuilder.Build(GetText(out var min), PreviewName);
         lv.root.position = new Vector3(min.x, 0, min.y);
@@ -763,12 +510,11 @@ public class LevelEditorWindow : EditorWindow
 
     void Load(int i)
     {
-        if (Moving) CancelClip(); // a pick-up belongs to the level it came from; a copy travels
+        if (d.Moving) d.CancelClip(); // a pick-up belongs to the level it came from; a copy travels
         piece = null;
         level = i;
         var path = PathOf(i);
-        if (File.Exists(path)) SetText(File.ReadAllText(path), Vector2Int.zero);
-        else { cells = new(); objects = new(); angles = new(); floors = new(); par = 0; }
+        SetText(File.Exists(path) ? File.ReadAllText(path) : "", Vector2Int.zero);
         draft = GetText(out draftMin);
         dirty = false;
         Rebuild();

@@ -20,6 +20,7 @@ public static partial class LevelBuilder
         public Vector2[] pts; // convex, counter-clockwise, x/z
         public Rect bounds;
         public float height = RailHeight; // balls flying higher than this pass over it (moving walls change it)
+        public float bottom = float.NegativeInfinity; // balls whose top is below this pass under it (a module on a bridge's deck)
         public float kick;                // bumper: extra speed it gives on every hit
     }
 
@@ -49,7 +50,7 @@ public static partial class LevelBuilder
 
     static void BuildTable(Level lv)
     {
-        var t = lv.tiles;
+        var t = lv.ground; // the table under the modules
         int w = t.GetLength(0), h = t.GetLength(1);
         var openings = new List<Opening>();
         for (int x = 0; x < w; x++)
@@ -209,7 +210,7 @@ public static partial class LevelBuilder
     // the neighbor in direction d shows felt along the shared edge (a diagonal rail only on its felt half)
     static bool FeltToward(Level lv, Vector2Int cell, Vector2Int d)
     {
-        char n = At(lv.tiles, cell + d);
+        char n = At(lv.ground, cell + d);
         return IsFloor(n) || (n == DiagRail && Vector2.Dot(d, DiagDir(lv, cell + d)) > 0);
     }
 
@@ -226,7 +227,7 @@ public static partial class LevelBuilder
     {
         foreach (var d in Dirs)
         {
-            if (IsVoid(At(lv.tiles, cell + d)) || EdgeMinY(lv, cell, d) >= y - 1e-3f) continue;
+            if (IsVoid(At(lv.ground, cell + d)) || EdgeMinY(lv, cell, d) >= y - 1e-3f) continue;
             Vector2 dv = d, along = new(-dv.y, dv.x), mid = (Vector2)cell + dv * 0.5f;
             var pts = Poly.CCW(new List<Vector2> { mid - along * 0.5f, mid + along * 0.5f, mid + along * 0.5f - dv * 0.06f, mid - along * 0.5f - dv * 0.06f }).ToArray();
             lv.walls.Add(new Wall { pts = pts, bounds = Rect.MinMaxRect(pts.Min(q => q.x), pts.Min(q => q.y), pts.Max(q => q.x), pts.Max(q => q.y)), height = y - FloorStep * 0.6f });
@@ -244,7 +245,7 @@ public static partial class LevelBuilder
             Vector2 dv = d, along = new Vector2(-dv.y, dv.x) * 0.5f, mid = (Vector2)cell + dv * 0.5f;
             Vector2 a = mid - along, b = mid + along;
             float ya = lv.SurfaceY(cell, a), yb = lv.SurfaceY(cell, b);
-            bool open = IsVoid(At(lv.tiles, cell + d)) || Mathf.Min(lv.SurfaceY(cell + d, a), lv.SurfaceY(cell + d, b)) < Mathf.Max(ya, yb) - 1e-3f;
+            bool open = IsVoid(At(lv.ground, cell + d)) || Mathf.Min(lv.SurfaceY(cell + d, a), lv.SurfaceY(cell + d, b)) < Mathf.Max(ya, yb) - 1e-3f;
             if (open) felt.Face(new[] { V(a, -FloorThickness), V(a, ya), V(b, yb), V(b, -FloorThickness) }, new Vector3(dv.x, 0, dv.y));
         }
     }
