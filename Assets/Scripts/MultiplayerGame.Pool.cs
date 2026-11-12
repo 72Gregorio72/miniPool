@@ -9,7 +9,11 @@ using UnityEngine.InputSystem;
 // Same lobby, network and physics as the minigolf match: the host simulates, the client only sends its shot / cue placement.
 public partial class MultiplayerGame
 {
-    bool pool;                   // this match is 8-ball
+    bool pool;                   // this match is 8-ball (or 9-ball, see nine)
+    bool nine;                   // 9-ball: balls 1-9 in a diamond, hit the lowest first, the 9 wins (Rules.NineBall)
+    int shotLowest;              // 9-ball: lowest ball on the table when the shot started
+    Ball nineBall;
+    Vector3 nineSpot;            // where the 9 is respotted
     int tableSkin;               // the host's table skin (GameManager.TableSkin), for everyone
     int turn;                    // player id who shoots next
     bool ballInHand;             // the player on turn places the cue ball first
@@ -27,6 +31,7 @@ public partial class MultiplayerGame
         started = true;
         round = 1;
         BuildLevel();
+        if (nine) NineRack();
         PoolBalls();
         poolCueStart = poolCue.transform.position;
         poolCue.onCueHit = hit => { if (shotRunning && shotFirstHit < 0) shotFirstHit = hit.number; };
@@ -51,6 +56,26 @@ public partial class MultiplayerGame
         ToastAll($"Spacca {Tag(turn)}");
     }
 
+    // 9-ball: the 8-ball rack becomes a diamond of 1-9 on the same apex, the 1 in front, the 9 in the middle, the rest at random
+    void NineRack()
+    {
+        var rack = level.balls.Where(b => b.number != 0).ToList();
+        var apex = rack.OrderBy(b => b.transform.position.x).First().transform.position;
+        foreach (var b in rack) { level.balls.Remove(b); Destroy(b.gameObject); }
+        var rest = Enumerable.Range(2, 7).OrderBy(_ => Random.value).ToList();
+        int[] rows = { 1, 2, 3, 2, 1 };
+        float s = Ball.Radius * 2 * 1.002f; // same tiny gap as LevelBuilder.Rack
+        int next = 0;
+        for (int k = 0; k < rows.Length; k++)
+            for (int i = 0; i < rows[k]; i++)
+            {
+                int n = k == 0 ? 1 : k == 2 && i == 1 ? 9 : rest[next++];
+                var b = LevelBuilder.SpawnBall(n, apex + new Vector3(k * s * 0.8660254f, 0, (i - (rows[k] - 1) / 2f) * s), level.root);
+                level.balls.Add(b);
+                if (n == 9) { nineBall = b; nineSpot = b.transform.position; }
+            }
+    }
+
     // the shared cue ball is everyone's cue (camera, cue stick, aim lines)
     void PoolBalls()
     {
@@ -66,6 +91,7 @@ public partial class MultiplayerGame
     {
         if (!PoolReady(id)) return;
         var group = players[id].group;
+        shotLowest = level.balls.Where(b => b.number != 0 && b.gameObject.activeSelf).Select(b => b.number).DefaultIfEmpty(9).Min();
         shotCleared = group != 0 && !level.balls.Any(b => b.gameObject.activeSelf && Rules.GroupOf(b.number) == group);
         PoolPhysics.Shoot(poolCue, dir, speed, tip.x, tip.y, elevation);
         shotRunning = true;
@@ -96,8 +122,10 @@ public partial class MultiplayerGame
     {
         var shooter = players[turn];
         var other = Opponent(turn);
-        var s = Rules.EightBall(shooter.group, shotCleared, isBreak, shotFirstHit, shotPotted, shotLost);
+        var s = nine ? Rules.NineBall(shotLowest, shotFirstHit, shotPotted, shotLost)
+            : Rules.EightBall(shooter.group, shotCleared, isBreak, shotFirstHit, shotPotted, shotLost);
         shotRunning = isBreak = false;
+        if (s.respot) Respawn(nineBall, FreeSpot(nineSpot, nineBall));
         if (s.over) { EndPool(s.shooterWins ? shooter.id : other.id, $"{Tag(shooter.id)}: {s.message}"); return; }
         if (s.assign != 0)
         {
@@ -116,16 +144,16 @@ public partial class MultiplayerGame
         if (s.assign != 0) ToastAll($"{Tag(shooter.id)} ha le {Rules.GroupName(s.assign)}");
     }
 
-    // where the cue ball may be put down: on plain felt, not touching another ball
-    bool CueSpotOk(Vector3 q) => level.Supports(q) && level.TileAt(q) == '.' &&
-        !level.balls.Any(b => b != poolCue && b.gameObject.activeSelf && new Vector2(b.transform.position.x - q.x, b.transform.position.z - q.z).magnitude < 2 * Ball.Radius + 0.01f);
+    // where a ball (the cue ball, or the respotted 9) may be put down: on plain felt, not touching another ball
+    bool CueSpotOk(Vector3 q, Ball self = null) => level.Supports(q) && level.TileAt(q) == '.' &&
+        !level.balls.Any(b => b != (self ? self : poolCue) && b.gameObject.activeSelf && new Vector2(b.transform.position.x - q.x, b.transform.position.z - q.z).magnitude < 2 * Ball.Radius + 0.01f);
 
-    Vector3 FreeSpot(Vector3 p)
+    Vector3 FreeSpot(Vector3 p, Ball self = null)
     {
         for (int i = 0; i < 49; i++)
         {
             var q = Spread(p, i);
-            if (CueSpotOk(q)) return q;
+            if (CueSpotOk(q, self)) return q;
         }
         return p;
     }
@@ -179,8 +207,15 @@ public partial class MultiplayerGame
         int Down(int group) => group == 0 ? 0 : 7 - level.balls.Count(b => b.gameObject.activeSelf && Rules.GroupOf(b.number) == group);
         string title = turn == me ? (ballInHand ? "Palla in mano: tocca a te" : "Tocca a te") : $"Tocca a {Tag(turn)}";
         string help = turn == me && ballInHand
-            ? "Punta il mouse sul panno e clic sinistro = posa la bianca   ·   T = vista dall'alto   ·   M = esci"
-            : "Sinistro + mouse = mira   ·   Destro tenuto + mouse indietro = tiro   ·   imbuca il tuo gruppo, poi la nera   ·   M = esci";
+            ? "Punta il mouse sul panno e clic sinistro = posa la bianca   ·   T = vista dall'alto   ·   Esc = menu"
+            : $"Sinistro + mouse = mira   ·   Destro tenuto + mouse indietro = tiro   ·   {(nine ? "colpisci prima la palla più bassa, la 9 vince" : "imbuca il tuo gruppo, poi la nera")}   ·   Esc = menu";
+        if (nine)
+        {
+            int lowest = level.balls.Where(b => b.number != 0 && b.gameObject.activeSelf).Select(b => b.number).DefaultIfEmpty(9).Min();
+            ui.ShowMatchHud(title, players.Values.Where(p => !p.gone)
+                .Select(p => (PlayerColor(p.id), Name(p.id) + (p.id == turn ? "  ◀" : ""), 0, false)).ToList(), $"prima la {lowest}", help);
+            return;
+        }
         ui.ShowMatchHud(title, players.Values.Where(p => !p.gone)
             .Select(p => (PlayerColor(p.id), $"{Name(p.id)} · {Rules.GroupName(p.group)}" + (p.id == turn ? "  ◀" : ""), Down(p.group), false)).ToList(), "imbucate", help);
     }
@@ -194,13 +229,14 @@ public partial class MultiplayerGame
     void ShowPoolEnd(int winner, string why)
     {
         playing = false;
+        CloseMenu(false);
         over = true;
         if (handGhost) handGhost.SetActive(false);
         if (cueCtl) cueCtl.enabled = false;
         if (orbit) orbit.enabled = false;
         Cursor.lockState = CursorLockMode.None;
         var rows = players.Values.OrderByDescending(p => p.id == winner)
-            .Select(p => (PlayerColor(p.id), $"{Name(p.id)} · {Rules.GroupName(p.group)}", 0,
+            .Select(p => (PlayerColor(p.id), nine ? Name(p.id) : $"{Name(p.id)} · {Rules.GroupName(p.group)}", 0,
                 p.group == 0 ? 0 : 7 - level.balls.Count(b => b.gameObject.activeSelf && Rules.GroupOf(b.number) == p.group), float.NaN)).ToList();
         ui.ShowStandings($"{Name(winner)} vince!", why, rows, Leave);
     }

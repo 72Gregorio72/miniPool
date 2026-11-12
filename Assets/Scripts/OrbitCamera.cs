@@ -1,4 +1,5 @@
 using UnityEngine;
+using UnityEngine.EventSystems;
 using UnityEngine.InputSystem;
 
 // Orbit around the cue ball: left mouse drag turns (left/right = aim), wheel zooms,
@@ -15,6 +16,7 @@ public class OrbitCamera : MonoBehaviour
     Vector3 pivot;
     bool top;
     float savedPitch, savedDistance, savedYaw, savedFreePitch, blend = 1;
+    bool uiPress; // left press that started on a UI button (hint X): no orbit, no cursor lock
     float look; // camera yaw on top of the aim (Ctrl + left drag); a normal drag glides it back to 0
 
     public Vector3 AimDirection => Quaternion.Euler(0, yaw, 0) * Vector3.forward;
@@ -30,13 +32,16 @@ public class OrbitCamera : MonoBehaviour
         bool fine = kb != null && kb.shiftKey.isPressed;
         float dt = Time.unscaledDeltaTime;
 
+        if (mouse != null && mouse.leftButton.wasPressedThisFrame)
+            uiPress = EventSystem.current && EventSystem.current.IsPointerOverGameObject();
+        bool left = mouse != null && mouse.leftButton.isPressed && !uiPress;
         if (mouse != null)
-            Cursor.lockState = mouse.leftButton.isPressed || mouse.rightButton.isPressed ? CursorLockMode.Locked : CursorLockMode.None;
+            Cursor.lockState = left || mouse.rightButton.isPressed ? CursorLockMode.Locked : CursorLockMode.None;
         if (kb != null && kb.fKey.wasPressedThisFrame) ToggleFree();
 
         if (Free)
         {
-            if (mouse != null && (mouse.leftButton.isPressed || mouse.rightButton.isPressed))
+            if (mouse != null && (left || mouse.rightButton.isPressed))
             {
                 var d = mouse.delta.ReadValue() * 0.2f * GameManager.Sensitivity;
                 yaw += d.x;
@@ -58,7 +63,7 @@ public class OrbitCamera : MonoBehaviour
         // right button is the shot (CueController): no orbiting while it is held
         if (mouse != null)
         {
-            if (mouse.leftButton.isPressed && !mouse.rightButton.isPressed)
+            if (left && !mouse.rightButton.isPressed)
             {
                 var d = mouse.delta.ReadValue() * (fine ? 0.02f : 0.2f) * GameManager.Sensitivity;
                 if (kb != null && kb.ctrlKey.isPressed) look += d.x;

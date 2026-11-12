@@ -33,10 +33,57 @@ public static class BallArt
         public bool crowns;  // ...each one with the crown (Rules.Crown)
     }
 
-    public static bool Unlocked(int s) => Skins[s].world == 0 || GameManager.WorldDone(Skins[s].world - 1, Skins[s].crowns);
+    public static bool Unlocked(int s) => Open(Skins[s].world, Skins[s].crowns);
 
-    public static string Requirement(int s) =>
-        Skins[s].crowns ? $"Corona in tutti i livelli del Mondo {Skins[s].world}" : $"Finisci il Mondo {Skins[s].world}";
+    public static string Requirement(int s) => Requirement(Skins[s].world, Skins[s].crowns);
+
+    static bool Open(int world, bool crowns) => world == 0 || GameManager.WorldDone(world - 1, crowns);
+
+    static string Requirement(int world, bool crowns) => crowns ? $"Corona in tutti i livelli del Mondo {world}" : $"Finisci il Mondo {world}";
+
+    // cue skins: colors of the Cue model's parts (Blender materials CueWood, CueButt, CueWrap, CueTip), unlocked like the balls;
+    // they hang on the room's rack (LevelBuilder.Room), one slot each
+    public struct CueSkin
+    {
+        public string name;
+        public Color wood, butt, wrap, tip;
+        public int world;
+        public bool crowns;
+    }
+
+    public static readonly CueSkin[] Cues =
+    {
+        new() { name = "Acero", wood = new(0.85f, 0.7f, 0.45f), butt = new(0.08f, 0.05f, 0.04f), wrap = new(0.15f, 0.15f, 0.17f), tip = new(0.15f, 0.3f, 0.7f) },
+        new() { name = "Ciliegio", wood = new(0.62f, 0.25f, 0.15f), butt = new(0.95f, 0.9f, 0.8f), wrap = new(0.55f, 0.08f, 0.1f), tip = new(0.15f, 0.3f, 0.7f) },
+        new() { name = "Ebano", wood = new(0.12f, 0.1f, 0.1f), butt = new(0.85f, 0.65f, 0.25f), wrap = new(0.08f, 0.08f, 0.08f), tip = new(0.85f, 0.65f, 0.25f), world = 1 },
+        new() { name = "Smeraldo", wood = new(0.1f, 0.58f, 0.38f), butt = new(0.05f, 0.2f, 0.14f), wrap = new(1f, 0.78f, 0.3f), tip = new(1f, 0.78f, 0.3f), world = 1, crowns = true },
+        new() { name = "Laguna", wood = new(0.2f, 0.75f, 0.78f), butt = new(1f, 0.62f, 0.25f), wrap = new(0.96f, 0.84f, 0.62f), tip = new(1f, 0.62f, 0.25f), world = 2 },
+        new() { name = "Reale", wood = new(0.42f, 0.1f, 0.68f), butt = new(1f, 0.8f, 0.2f), wrap = new(0.25f, 0.05f, 0.4f), tip = new(1f, 0.8f, 0.2f), world = 2, crowns = true },
+    };
+
+    public static bool CueUnlocked(int s) => Open(Cues[s].world, Cues[s].crowns);
+
+    public static string CueRequirement(int s) => Requirement(Cues[s].world, Cues[s].crowns);
+
+    public static int SelectedCue
+    {
+        get { int s = Mathf.Clamp(PlayerPrefs.GetInt("MiniPool.cue", 0), 0, Cues.Length - 1); return CueUnlocked(s) ? s : 0; }
+        set { PlayerPrefs.SetInt("MiniPool.cue", value); PlayerPrefs.Save(); }
+    }
+
+    /// <summary>Colors a spawned Cue model (LevelBuilder.Visual) with cue skin s; dark = locked (a dark silhouette).</summary>
+    public static void PaintCue(GameObject cue, int s, bool dark = false)
+    {
+        var k = Cues[s];
+        foreach (var r in cue.GetComponentsInChildren<Renderer>())
+            r.sharedMaterials = System.Array.ConvertAll(r.sharedMaterials, m =>
+            {
+                if (!m) return m;
+                Color? c = m.name switch { "CueWood" => k.wood, "CueButt" => k.butt, "CueWrap" => k.wrap, "CueTip" => k.tip,
+                    "CueFerrule" => new Color(0.95f, 0.93f, 0.85f), _ => null };
+                return c is { } col ? LevelBuilder.Mat(m.name, dark ? Color.Lerp(Color.black, col, 0.12f) : col) : m;
+            });
+    }
 
     public static readonly Skin[] Skins =
     {

@@ -16,9 +16,9 @@ using UnityEngine.InputSystem;
 public partial class MultiplayerGame : MonoBehaviour
 {
     public const int MaxPlayers = 8, TargetScore = 10;
-    const byte Protocol = 1; // bumped when a message changes shape: a Hello with another version is kicked (OnMessage)
+    const byte Protocol = 3; // bumped when a message changes shape: a Hello with another version is kicked (OnMessage)
     const byte Hello = 1, Lobby = 2, Round = 3, State = 4, Shoot = 5, Toast = 6, RoundEnd = 7, Build = 8, Pick = 9, Place = 10, Done = 11, PocketMsg = 12,
-        PoolEnd = 13, PlaceCue = 14;
+        PoolEnd = 13, PlaceCue = 14, Aim = 15;
 
     // premade field pieces, same order on every machine (same build)
     static TextAsset[] pieces;
@@ -66,12 +66,14 @@ public partial class MultiplayerGame : MonoBehaviour
 
     // ---------- lobby ----------
 
-    public async void Host(string levelSource, bool pool = false)
+    public async void Host(string levelSource, bool pool = false, bool nine = false)
     {
         if (string.IsNullOrEmpty(levelSource)) { ui.ShowMultiplayer("Nessun livello in Resources/Levels"); return; }
         ui.ShowMultiplayer("Creo la partita…");
         levelText = levelSource;
         this.pool = pool;
+        this.nine = nine;
+        lines = pool ? 1 : 0;
         net = NewNet();
         try { await net.Host(MaxPlayers); }
         catch (Exception e) { Fail("Impossibile creare la partita: " + e.Message); return; }
@@ -119,12 +121,18 @@ public partial class MultiplayerGame : MonoBehaviour
     void BroadcastLobby()
     {
         foreach (var id in players.Keys.Where(id => id != 0))
-            net.Send(id, Net.Msg(Lobby, w => { w.Write(id); w.Write(pool); w.Write(tableSkin); WritePlayers(w); }));
+            net.Send(id, Net.Msg(Lobby, w => { w.Write(id); w.Write(pool); w.Write(nine); w.Write(lines); w.Write(tableSkin); WritePlayers(w); }));
         ShowLobby();
     }
 
     void ShowLobby() => ui.ShowLobby(net.Code, players.Values.Select(p => (p.skin, PlayerColor(p.id), Name(p.id))).ToList(), net.IsHost,
-        !pool || players.Count == 2 ? (Action)StartRound : null, Leave, pool ? "biliardo (8 palle, 2 giocatori)" : "minigolf");
+        !pool || players.Count == 2 ? (Action)StartRound : null, Leave,
+        nine ? "palla 9 (2 giocatori)" : pool ? "biliardo (8 palle, 2 giocatori)" : "minigolf",
+        "Linee di mira: " + LineNames[lines], () => { lines = (lines + 1) % LineNames.Length; BroadcastLobby(); });
+
+    // aim lines (host's choice in the lobby): 0 = cue + the ball it hits, 1 = cue only, 2 = none
+    int lines;
+    static readonly string[] LineNames = { "facile (bianca e palla colpita)", "normale (solo bianca)", "difficile (nessuna)" };
 
     public void Leave()
     {
@@ -145,6 +153,7 @@ public partial class MultiplayerGame : MonoBehaviour
         if (level != null) Destroy(level.root.gameObject);
         level = null;
         if (cueCtl) cueCtl.enabled = false;
+        HideRemoteCues();
         players.Clear();
         started = playing = over = building = false;
         if (marker) marker.SetActive(false);
@@ -152,7 +161,8 @@ public partial class MultiplayerGame : MonoBehaviour
         round = 0;
         pocketBy = -1;
         nextRoundAt = -1;
-        pool = false;
+        pool = nine = false;
+        CloseMenu();
         if (handGhost) handGhost.SetActive(false);
     }
 
@@ -189,6 +199,7 @@ public partial class MultiplayerGame : MonoBehaviour
                     Vector2.ClampMagnitude(new Vector2(r.ReadSingle(), r.ReadSingle()), 0.5f), r.ReadSingle());
             else if (type is Pick or Place or Done or PocketMsg) HostBuild(from, type, r);
             else if (type == PlaceCue && pool && playing) HostPlaceCue(from, new Vector3(r.ReadSingle(), 0, r.ReadSingle()));
+            else if (type == Aim && playing) { r.ReadInt32(); OnAim(from, r); } // the id is the sender's, not what they wrote
             return;
         }
         switch (type)
@@ -196,12 +207,15 @@ public partial class MultiplayerGame : MonoBehaviour
             case Lobby:
                 me = r.ReadInt32();
                 pool = r.ReadBoolean();
+                nine = r.ReadBoolean();
+                lines = Mathf.Clamp(r.ReadInt32(), 0, LineNames.Length - 1);
                 tableSkin = r.ReadInt32();
                 ReadPlayers(r);
                 ShowLobby();
                 break;
             case Round: ClientRound(r); break;
             case State: if (playing) ReadState(r); break;
+            case Aim: if (playing) OnAim(r.ReadInt32(), r); break;
             case Toast: ui.Toast(r.ReadString()); break;
             case Build: ReadBuild(r); break;
             case PoolEnd: ShowPoolEnd(r.ReadInt32(), r.ReadString()); break;
@@ -390,10 +404,10 @@ public partial class MultiplayerGame : MonoBehaviour
             cueCtl = new GameObject("MultiplayerCue").AddComponent<CueController>();
             cueCtl.transform.SetParent(transform);
             cueCtl.shoot = RequestShot;
-            cueCtl.guide = true;
             cueCtl.ui = ui;
         }
-        cueCtl.guideHit = !pool;
+        cueCtl.guide = lines < 2;
+        cueCtl.guideHit = lines == 0;
         cueCtl.cue = mine;
         cueCtl.level = level;
         cueCtl.orbit = orbit;
@@ -401,9 +415,9 @@ public partial class MultiplayerGame : MonoBehaviour
         ShowHud();
     }
 
-    void ShowHud() { if (pool) { PoolHud(); return; } ui.ShowMatchHud($"Round {round}", players.Values.Where(p => !p.gone)
+    void ShowHud() { if (menuOpen) return; if (pool) { PoolHud(); return; } ui.ShowMatchHud($"Round {round}", players.Values.Where(p => !p.gone)
         .Select(p => (PlayerColor(p.id), Name(p.id), p.score, p.finished)).ToList(), $"a {TargetScore}",
-        "Sinistro + mouse = mira   ·   Destro tenuto + mouse indietro = tiro   ·   imbuca la TUA nera   ·   M = esci"); }
+        "Sinistro + mouse = mira   ·   Destro tenuto + mouse indietro = tiro   ·   imbuca la TUA nera   ·   Esc = menu"); }
 
     // ---------- play ----------
 
@@ -425,6 +439,81 @@ public partial class MultiplayerGame : MonoBehaviour
         p.shotTime = Time.time;
     }
 
+    // ---------- the other players' cues ----------
+
+    // everyone sends their cue pose 20 times a second (unreliable: a lost one is replaced by the next), the host relays it with the sender's id
+    class RemoteCue
+    {
+        public Transform stick;
+        public int skin = -1;
+        public bool on;
+        public Vector3 dir, toDir;
+        public Vector2 tip, toTip;
+        public float power, toPower, elevation, toElevation;
+    }
+
+    readonly Dictionary<int, RemoteCue> remoteCues = new();
+    float aimTimer;
+
+    void SendAim()
+    {
+        aimTimer -= Time.deltaTime;
+        if (aimTimer > 0) return;
+        aimTimer = SendRate;
+        var (power, tip, elevation) = cueCtl.Aim;
+        var msg = AimMsg(me, cueCtl.enabled, orbit.AimDirection, power, tip, elevation, BallArt.SelectedCue);
+        net.Send(net.IsHost ? -1 : 0, msg, false);
+    }
+
+    static byte[] AimMsg(int id, bool on, Vector3 dir, float power, Vector2 tip, float elevation, int skin) => Net.Msg(Aim, w =>
+    {
+        w.Write(id); w.Write(on); w.Write(dir.x); w.Write(dir.z); w.Write(power); w.Write(tip.x); w.Write(tip.y); w.Write(elevation); w.Write(skin);
+    });
+
+    void OnAim(int id, BinaryReader r)
+    {
+        bool on = r.ReadBoolean();
+        var dir = new Vector3(r.ReadSingle(), 0, r.ReadSingle());
+        float power = r.ReadSingle();
+        var tip = new Vector2(r.ReadSingle(), r.ReadSingle());
+        float elevation = r.ReadSingle();
+        int skin = r.ReadInt32();
+        if (!float.IsFinite(dir.x + dir.z + power + tip.x + tip.y + elevation)) throw new InvalidDataException("mira non valida");
+        if (net.IsHost) net.Send(-1, AimMsg(id, on, dir, power, tip, elevation, skin), false);
+        if (id == me || dir.sqrMagnitude < 1e-6f) return;
+        if (!remoteCues.TryGetValue(id, out var c)) remoteCues[id] = c = new RemoteCue { stick = CueController.NewStick(transform) };
+        skin = Mathf.Clamp(skin, 0, BallArt.Cues.Length - 1);
+        if (c.skin != skin) BallArt.PaintCue(c.stick.gameObject, c.skin = skin);
+        if (!c.on) { c.dir = dir.normalized; c.tip = tip; c.power = power; c.elevation = elevation; } // appears: no sweep from the old pose
+        c.on = on;
+        c.toDir = dir.normalized;
+        c.toTip = Vector2.ClampMagnitude(tip, 0.5f);
+        c.toPower = Mathf.Clamp01(power);
+        c.toElevation = Mathf.Clamp(elevation, PoolPhysics.MinElevation, PoolPhysics.MaxElevation);
+    }
+
+    // every frame, smoothed between the 20 Hz updates, on the owner's cue ball as it is here
+    void ShowRemoteCues()
+    {
+        float k = 1 - Mathf.Exp(-20 * Time.deltaTime);
+        foreach (var (id, c) in remoteCues)
+        {
+            bool show = players.TryGetValue(id, out var p) && c.on && !p.gone && p.cue && p.cue.gameObject.activeSelf;
+            c.stick.gameObject.SetActive(show);
+            if (!show) continue;
+            c.dir = Vector3.Slerp(c.dir, c.toDir, k);
+            c.tip = Vector2.Lerp(c.tip, c.toTip, k);
+            c.power = Mathf.Lerp(c.power, c.toPower, k);
+            c.elevation = Mathf.Lerp(c.elevation, c.toElevation, k);
+            CueController.Pose(c.stick, p.cue.transform.position, c.dir, c.tip, c.elevation, c.power);
+        }
+    }
+
+    void HideRemoteCues()
+    {
+        foreach (var c in remoteCues.Values) { c.on = false; c.stick.gameObject.SetActive(false); }
+    }
+
     static bool Still(Ball b) => !b || !b.gameObject.activeSelf || (!b.IsMoving && !b.falling && !b.airborne);
 
     static bool Ready(Player p) => !p.finished && !p.gone && !p.shooting && p.potted.Count + p.lost.Count == 0
@@ -436,23 +525,29 @@ public partial class MultiplayerGame : MonoBehaviour
         net.Update();
         if (net == null) return; // a message closed the match
         var kb = Keyboard.current;
-        if ((playing || building) && kb != null && kb.mKey.wasPressedThisFrame) { Leave(); return; }
+        if ((playing || building) && kb != null && kb.mKey.wasPressedThisFrame && !menuOpen) { Leave(); return; }
+        // Esc = menu (the match goes on underneath); with the right button held it cancels the shot instead (CueController)
+        bool esc = kb != null && kb.escapeKey.wasPressedThisFrame && ui.escFrame != Time.frameCount;
+        if (menuOpen && esc && !ui.OnSettings) CloseMenu();
+        else if (!menuOpen && esc && (playing || building) && !(Mouse.current != null && Mouse.current.rightButton.isPressed)) OpenMenu();
 
         if (net.IsHost && nextRoundAt > 0 && Time.time >= nextRoundAt) StartBuild();
         if (building)
         {
             if (net.IsHost && players.Values.All(q => q.gone || q.placed) && (pocketBy < 0 || players[pocketBy].gone)) StartRound();
-            else BuildInput();
+            else if (!menuOpen) BuildInput();
             return;
         }
-        if (!playing || level == null) return;
+        if (!playing || level == null) { HideRemoteCues(); return; }
 
         if (net.IsHost) HostStep();
         else ClientStep();
-        if (!playing) return; // the round just ended
+        if (!playing) { HideRemoteCues(); return; } // the round just ended
 
-        cueCtl.enabled = myReady;
-        if (pool) HandInput();
+        cueCtl.enabled = myReady && !menuOpen;
+        SendAim();
+        ShowRemoteCues();
+        if (pool && !menuOpen) HandInput();
         var mine = players.TryGetValue(me, out var p) ? p.cue : null;
         if (mine && mine.gameObject.activeSelf)
         {
@@ -628,6 +723,7 @@ public partial class MultiplayerGame : MonoBehaviour
     void ShowRoundEnd()
     {
         playing = false;
+        CloseMenu(false);
         if (cueCtl) cueCtl.enabled = false;
         if (orbit) orbit.enabled = false;
         Cursor.lockState = CursorLockMode.None;
@@ -690,15 +786,16 @@ public partial class MultiplayerGame : MonoBehaviour
         var rot = Quaternion.Euler(65, 0, 0);
         Camera.main.transform.SetPositionAndRotation(b.center - rot * Vector3.forward * (Mathf.Max(b.size.x, b.size.z * 1.8f) + 6), rot);
 
+        if (menuOpen) return; // CloseMenu shows it
         var p = players[me];
         if (p.piece < 0)
             ui.ShowPiecePicker(Pieces.Select(t => (t.name, t.text)).ToList(), round, i => SendBuildMsg(Pick, w => w.Write(i)));
         else if (!p.placed)
-            ui.ShowBuildHud($"{Pieces[p.piece].name}: attaccalo al tavolo", "Clic = attacca (le sponde vicine si aprono)   ·   R / Q = ruota   ·   M = esci",
+            ui.ShowBuildHud($"{Pieces[p.piece].name}: attaccalo al tavolo", "Clic = attacca (le sponde vicine si aprono)   ·   R / Q = ruota   ·   Esc = menu",
                 () => SendBuildMsg(Done, _ => { }));
         else if (pocketBy == me && PiecesDone)
-            ui.ShowBuildHud("Sei arrivato primo: sposta la buca", "Clic su una sponda o sul panno = buca   ·   M = esci", null);
-        else ui.ShowBuildHud(PiecesDone ? "Il primo arrivato sta spostando la buca…" : "Aspetto che gli altri attacchino i loro pezzi…", "M = esci", null);
+            ui.ShowBuildHud("Sei arrivato primo: sposta la buca", "Clic su una sponda o sul panno = buca   ·   Esc = menu", null);
+        else ui.ShowBuildHud(PiecesDone ? "Il primo arrivato sta spostando la buca…" : "Aspetto che gli altri attacchino i loro pezzi…", "Esc = menu", null);
     }
 
     // everyone still in the match has attached (or skipped) their piece: now the round's winner moves the pocket
@@ -812,6 +909,32 @@ public partial class MultiplayerGame : MonoBehaviour
             }
             ghostCells.Add(g);
         }
+    }
+
+    // ---------- Esc menu ----------
+
+    bool menuOpen;
+
+    void OpenMenu()
+    {
+        menuOpen = true;
+        if (cueCtl) cueCtl.enabled = false;
+        if (orbit) orbit.enabled = false;
+        if (marker) marker.SetActive(false);
+        if (handGhost) handGhost.SetActive(false);
+        Cursor.lockState = CursorLockMode.None;
+        ui.ShowPause(() => CloseMenu(), null, Leave, "Esci dalla partita");
+    }
+
+    // show = put the match screen back (false when another screen takes over, e.g. the standings)
+    void CloseMenu(bool show = true)
+    {
+        if (!menuOpen) return;
+        menuOpen = false;
+        if (!show || net == null) return;
+        if (building) { ShowBuild(); return; }
+        if (orbit) orbit.enabled = playing;
+        ShowHud();
     }
 
     // ---------- helpers ----------

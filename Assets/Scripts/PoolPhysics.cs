@@ -19,7 +19,7 @@ public static class PoolPhysics
     // tipX/tipY: cue tip offset from the ball center in radii (-0.5..0.5); +X right english, +Y follow, -Y draw
     public const float SquirtDeg = 5f;     // squirt: degrees the cue ball leaves the aim line per unit of side tip (2.5° at max english), away from the english
     public const float MaxElevation = 70f; // cue butt raised up to this angle (massé)
-    public const float MinElevation = -20f; // below 0 the cue tilts up and hits from below: jump shot
+    public const float MinElevation = -35f; // below 0 the cue tilts up and hits from below: jump shot (steep enough to clear a ball, 3D ball contacts)
     public const float MuBall = 0.06f;     // ball-ball friction: throw
 
     // elevation: degrees the cue butt is raised. The cue pushes along its own axis at the tip offset, so a raised cue
@@ -336,18 +336,17 @@ public static class PoolPhysics
         {
             var a = balls[i];
             if (!a.gameObject.activeSelf || a.falling) continue;
-            // shortcut: flying balls pass over other balls (2D contacts only); do 3D contacts if jumps start hitting balls
-            if (!a.airborne)
-                for (int j = i + 1; j < balls.Count; j++)
+            // on the cloth: 2D contacts; a flying ball (jump, fan) hits what it meets in 3D (BallBall), and flies over what is lower
+            for (int j = i + 1; j < balls.Count; j++)
+            {
+                var c = balls[j];
+                if (c.gameObject.activeSelf && !c.falling && Rules.Collide(a.number, a.owner, c.number, c.owner)
+                    && (a.airborne || c.airborne || Mathf.Abs(a.transform.position.y - c.transform.position.y) < R)) // different floors: no contact
                 {
-                    var c = balls[j];
-                    if (c.gameObject.activeSelf && !c.falling && !c.airborne && Rules.Collide(a.number, a.owner, c.number, c.owner)
-                        && Mathf.Abs(a.transform.position.y - c.transform.position.y) < R) // different floors: no contact
-                    {
-                        float hit = BallBall(a, c);
-                        if (!predict) { Sfx.Play(Sfx.Kind.Ball, hit / 15); Juice.Hit(hit); }
-                    }
+                    float hit = BallBall(a, c);
+                    if (!predict && hit > 0) { Sfx.Play(Sfx.Kind.Ball, hit / 15); Juice.Hit(hit); }
                 }
+            }
             if (predict && Resting(a)) continue;
             // shortcut: walls are vertical up to their height, no tops (but gates and timed walls, GroundAt);
             // a ball coming down on a rail or block slides off it
@@ -371,6 +370,8 @@ public static class PoolPhysics
 
     public const float BoostSpeed = 12f;  // booster: minimum speed it sends the ball off with
     public const float JumpRatio = 0.6f;  // fan: vertical speed per unit of horizontal speed (~31 deg)
+    // fan: at least this vertical speed, so even a slow ball flies over a ball (peak 0.6 > one diameter; flying balls hit in 3D)
+    static readonly float FanMinLift = Mathf.Sqrt(2 * G * 0.6f);
     public const float BumperKick = 6f;   // bumper: speed added on every hit
     public const float BeltSpeed = 2.5f;  // conveyor: how fast it carries a ball
     public const float WindPush = 20f;                       // wind fan: acceleration 1 tile ahead (units/s²)
@@ -492,7 +493,7 @@ public static class PoolPhysics
         if (Has(felt, 'J', out _) && h.magnitude > 0.5f)
         {
             var fan = lv.ModuleAt<Fan>(c);
-            b.v.y = (fan ? fan.jumpRatio : JumpRatio) * h.magnitude;
+            b.v.y = Mathf.Max((fan ? fan.jumpRatio : JumpRatio) * h.magnitude, FanMinLift);
             b.airborne = true;
             if (!predict) { Sfx.Play(Sfx.Kind.Fan, 0.5f + h.magnitude / 15); Juice.Punch(lv, c, new Vector3(1.1f, 1.25f, 1.1f)); }
         }
@@ -613,7 +614,8 @@ public static class PoolPhysics
     static float BallBall(Ball a, Ball c)
     {
         var d = c.transform.position - a.transform.position;
-        d.y = 0;
+        bool air = a.airborne || c.airborne;
+        if (!air) d.y = 0; // both on the cloth: flat contact
         float dist = d.magnitude;
         if (dist >= 2 * R || dist < 1e-6f) return 0;
         var n = d / dist;
@@ -627,6 +629,7 @@ public static class PoolPhysics
         var j = n * jn; // equal masses; spin is kept, so follow/draw happen naturally
         a.v -= j;
         c.v += j;
+        if (air) { Settle(a); Settle(c); }
 
         // throw: friction at the contact (from a cut angle or english) pushes the object ball off the line of centers
         var rel = a.v + Vector3.Cross(a.w, n * R) - c.v - Vector3.Cross(c.w, -n * R); // contact slip, a relative to c
@@ -646,6 +649,14 @@ public static class PoolPhysics
         a.onCueHit?.Invoke(c);
         c.onCueHit?.Invoke(a);
         return approach;
+    }
+
+    // after a 3D hit: a ball on the cloth pushed up takes off, pushed down the cloth holds it
+    static void Settle(Ball b)
+    {
+        if (b.airborne || b.falling) return;
+        if (b.v.y > 0) b.airborne = true;
+        else b.v.y = 0;
     }
 
     // returns the impact speed (0 = no impact), for the sound

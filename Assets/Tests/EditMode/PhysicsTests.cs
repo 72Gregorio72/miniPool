@@ -36,6 +36,18 @@ public class PhysicsTests
         Assert.AreEqual(0, cue.transform.position.y - Ball.Radius, 1e-3f); // landed
     }
 
+    [Test] public void JumpShot_HitsBallStillInTheWay()
+    {
+        Make("#08......................................#"); // a soft jump stays lower than a ball: it hits the 8 in the air
+        var cue = lv.balls[0];
+        int hit = -1;
+        cue.onCueHit = o => hit = o.number;
+        PoolPhysics.Shoot(cue, Vector3.right, 8, 0, 0, PoolPhysics.MinElevation);
+        PoolPhysics.Simulate(lv, 0.5f);
+        Assert.AreEqual(8, hit, "a flying cue ball must not pass through a ball it meets");
+        Assert.Greater(lv.balls[1].v.x + lv.balls[1].transform.position.x, 1.5f, "the 8 was pushed forward");
+    }
+
     [Test] public void DrawShot_ComesBack()
     {
         Make("#...0.8..................................#");

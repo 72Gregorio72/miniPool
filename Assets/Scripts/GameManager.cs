@@ -106,6 +106,7 @@ public class GameManager : MonoBehaviour
         mp.game = this;
         ui.onHost = () => mp.Host(LevelBuilder.GoalToEight(Resources.Load<TextAsset>($"Levels/level{levels.FirstOrDefault():00}")?.text, Worlds.BallOf(levels.FirstOrDefault())));
         ui.onHostPool = () => mp.Host(Resources.Load<TextAsset>("PoolTable")?.text, pool: true);
+        ui.onHostNine = () => mp.Host(Resources.Load<TextAsset>("PoolTable")?.text, pool: true, nine: true);
         ui.onJoin = mp.Join;
         editor = gameObject.AddComponent<LevelEditor>();
         editor.game = this;
@@ -142,11 +143,12 @@ public class GameManager : MonoBehaviour
     }
 
     /// <summary>Menu background: a table built for show (no simulation), seen from the menu camera.</summary>
-    public LevelBuilder.Level MenuTable(string text, int world)
+    public LevelBuilder.Level MenuTable(string text, int world, int tableTheme)
     {
         if (level != null) Destroy(level.root.gameObject);
-        ApplyWorld(world);
+        LevelBuilder.SetTheme(Worlds.Themes[tableTheme]); // the table's colors (skin page: the online table skin)
         level = LevelBuilder.Build(text, "MenuTable");
+        ApplyWorld(world);
         LevelBuilder.Room(level); // the world's room around the table (home: world 1's)
         MenuCamera();
         return level;
@@ -191,6 +193,7 @@ public class GameManager : MonoBehaviour
             return;
         }
         if (level != null) Destroy(level.root.gameObject);
+        if (index != levelIndex) ui.hintClosed = false; // a restart keeps the hint closed
         levelIndex = index;
         if (customText != null) ApplyWorld(Mathf.Max(0, LevelBuilder.ThemeLine(text)));
         else ApplyTheme(index);
@@ -421,8 +424,7 @@ public class GameManager : MonoBehaviour
     {
         1 => cueCtl.Pulling ? "Rilascia [DESTRO] per tirare" : "Tieni [DESTRO] e tira il mouse indietro per caricare il tiro",
         2 => cueCtl.Pulling ? "Tieni anche [SINISTRO] e muovi il mouse: effetto sulla bianca"
-            : "[DESTRO] + [SINISTRO] insieme: il mouse sposta l'effetto sulla bianca",
-        3 => "[SINISTRO] + mouse  gira e mira\n[CTRL] + [SINISTRO]  guarda senza muovere la stecca\n[ROTELLA] zoom   [T] dall'alto   [F] volo libero",
+            : "[SINISTRO] + mouse  gira e mira\n[CTRL] + [SINISTRO]  guarda senza muovere la stecca\n[ROTELLA] zoom   [T] dall'alto   [F] volo libero\n[DESTRO] + [SINISTRO] insieme: il mouse sposta l'effetto sulla bianca",
         7 => "[W] / [S] alzano e abbassano la stecca: dall'alto la bianca gira",
         _ => null,
     };

@@ -15,8 +15,8 @@ using UnityEngine.UI;
 public partial class GameUI : MonoBehaviour
 {
     public Action<int> onPlay; // level index
-    public Func<string, int, LevelBuilder.Level> onTable; // (level text, world) -> the menu table (GameManager.MenuTable)
-    public Action onMenu, onHost, onHostPool; // onHostPool: online 8-ball (2 players, turns)
+    public Func<string, int, int, LevelBuilder.Level> onTable; // (level text, world, table theme) -> the menu table (GameManager.MenuTable)
+    public Action onMenu, onHost, onHostPool, onHostNine; // onHostPool / onHostNine: online 8-ball / 9-ball (2 players, turns)
     public Action onCreate; // "Crea livelli": the user's levels (LevelEditor)
     public Action<string> onJoin; // join code
     public List<int> levels = new();
@@ -26,7 +26,7 @@ public partial class GameUI : MonoBehaviour
         CrownGold = new(1f, 0.78f, 0.15f); // crown outline around a level's ball
     const float PlaneDistance = 0.3f, ModelDistance = 0.2f; // canvas and 3D icons, in front of the camera
 
-    enum Page { None, Home, Worlds, Levels, Skins, TableSkins, Pause, Settings, MyLevels, Editor }
+    enum Page { None, Home, Worlds, Levels, Skins, Cues, Pause, Settings, MyLevels, Editor }
     Page screen;
     public bool OnSettings => screen == Page.Settings;
     public int escFrame; // frame in which this UI used Esc, so the game doesn't use it too
@@ -35,6 +35,8 @@ public partial class GameUI : MonoBehaviour
     float popT, hintT;
     RectTransform hint;
     string hintText;
+    /// <summary>The player closed the hint with its X: no hints until GameManager.Load resets it.</summary>
+    public bool hintClosed;
     Font font;
     Sprite round, circle;
     Camera cam;
@@ -52,7 +54,7 @@ public partial class GameUI : MonoBehaviour
 
     // menu table: world shown (-1 = home), the home's cue ball and items, the level balls
     LevelBuilder.Level table;
-    int tableWorld;
+    int tableWorld, tableTheme;
     MenuView view; // hand-edited layout of home and level select (Resources/Menu/Menu.prefab, or the instance in the scene)
     Action[] homeActions;
     Transform marker;
@@ -135,6 +137,8 @@ public partial class GameUI : MonoBehaviour
     RenderTexture cueTex;
     Model cueModel;
     int cueSkin = -1;
+    GameObject cueShotStick; // the power bar's copy of the cue
+    int cueShotSkin = -1;
     static Sprite powerSprite;
 
     // bottom right, no text: the equipped cue ball (3D) with the tip spot (tip in ball radii, max 0.5) and the power bar beside it,
@@ -174,6 +178,7 @@ public partial class GameUI : MonoBehaviour
             cueSkin = BallArt.SelectedSkin;
             cueModel = AddModel(cueBallSlot, BallArt.CueMaterial(cueSkin));
         }
+        if (cueShotStick && cueShotSkin != BallArt.SelectedCue) BallArt.PaintCue(cueShotStick, cueShotSkin = BallArt.SelectedCue);
         if (cuePanel.gameObject.activeSelf != on) cuePanel.gameObject.SetActive(on);
         if (overlay.gameObject.activeSelf != on) overlay.gameObject.SetActive(on);
         if (cueCam) cueCam.enabled = on;
@@ -185,13 +190,13 @@ public partial class GameUI : MonoBehaviour
 
     // the power bar's cue: a copy of the equipped one, upright, made as thick as the bar (aspect = width / height), and an
     // orthographic camera far below the room that films it into cueTex (transparent background)
-    // shortcut: copied once; when cue skins exist, copy it again when the skin changes
+    // (copied once, repainted by SetCue when the cue skin changes)
     void BuildCueShot(float aspect)
     {
         var src = FindAnyObjectByType<CueController>(FindObjectsInactive.Include);
         if (!src || !src.Stick) return;
         var far = new Vector3(0, -2000, 0);
-        var stick = Instantiate(src.Stick.gameObject, transform);
+        var stick = cueShotStick = Instantiate(src.Stick.gameObject, transform);
         stick.SetActive(true);
         stick.transform.SetPositionAndRotation(far, Quaternion.identity); // upright, tip at the top
         stick.transform.localScale = Vector3.one;
@@ -232,6 +237,7 @@ public partial class GameUI : MonoBehaviour
     // Lines split by '\n'. null hides it. Rebuilt only when the text changes.
     public void SetHint(string text)
     {
+        if (hintClosed) text = null;
         if (text == hintText) return;
         hintText = text;
         if (hint) Destroy(hint.gameObject);
@@ -280,17 +286,22 @@ public partial class GameUI : MonoBehaviour
         edge.sizeDelta = slab.sizeDelta;
         stripe.anchoredPosition = new Vector2(0, h / 2 - 5);
         stripe.sizeDelta = new Vector2(w0 - 56, 6);
+        // X in the top right corner: hides the hints until the next level is loaded (GameManager.Load)
+        Btn(hint, "X", Ink, White, new Vector2(w0 / 2 - 6, top - 6), new Vector2(48, 48), () => { hintClosed = true; SetHint(null); }, circle);
     }
 
     // ---------- home ----------
 
-    /// <summary>Builds the menu table if it isn't up: world -1 = the home (rack + cue ball), otherwise that world's empty table.</summary>
-    public void ShowTable(int world)
+    /// <summary>Builds the menu table if it isn't up: world -1 = the home (rack + cue ball), otherwise that world's empty table.
+    /// theme >= 0: the table gets that theme's colors (Worlds.Themes), the room stays the world's.</summary>
+    public void ShowTable(int world, int theme = -1)
     {
-        if (table != null && table.root && tableWorld == world) return;
+        if (theme < 0) theme = Mathf.Max(0, world) % Worlds.Themes.Length;
+        if (table != null && table.root && tableWorld == world && tableTheme == theme) return;
         var text = Resources.Load<TextAsset>("PoolTable")?.text ?? "";
         tableWorld = world;
-        table = onTable?.Invoke(world < 0 ? text : text.Split("---")[0], Mathf.Max(0, world));
+        tableTheme = theme;
+        table = onTable?.Invoke(world < 0 ? text : text.Split("---")[0], Mathf.Max(0, world), theme);
     }
 
     // the prefab's buttons get their actions once; its own camera only shows the layout while editing
@@ -303,7 +314,23 @@ public partial class GameUI : MonoBehaviour
         if (view.worlds) view.worlds.gameObject.SetActive(false);
         if (view.skins) view.skins.gameObject.SetActive(false);
         if (view.skinView) view.skinView.enabled = false;
-        if (view.tableSkinButton) view.tableSkinButton.onClick.AddListener(() => { Sfx.Play(Sfx.Kind.Click, 1); ShowTableSkin(GameManager.TableSkin); });
+        if (view.tableSkinButton && view.skinBackButton)
+        {
+            // "Stecche": a copy of the table button one step above it (made before any listener is added, so it has none)
+            var cues = Instantiate(view.tableSkinButton, view.tableSkinButton.transform.parent);
+            RectTransform a = (RectTransform)view.tableSkinButton.transform, b = (RectTransform)view.skinBackButton.transform;
+            ((RectTransform)cues.transform).anchoredPosition = a.anchoredPosition * 2 - b.anchoredPosition;
+            cues.GetComponentInChildren<Text>().text = "Stecche";
+            cues.onClick.AddListener(() => { Sfx.Play(Sfx.Kind.Click, 1); ShowCues(); });
+        }
+        if (view.skins) foreach (var t in view.skins.GetComponentsInChildren<Text>(true)) Outlined(t);
+        // the table under the skins is the online table skin itself: a click switches it to the next one
+        if (view.tableSkinButton) view.tableSkinButton.onClick.AddListener(() =>
+        {
+            Sfx.Play(Sfx.Kind.Click, 1);
+            GameManager.TableSkin = (GameManager.TableSkin + 1) % Worlds.Themes.Length;
+            ShowSkin(skinShown);
+        });
         if (view.skinBackButton) view.skinBackButton.onClick.AddListener(() => { Sfx.Play(Sfx.Kind.Click, 1); ShowHome(); });
         homeActions = new Action[] { ShowWorlds, () => ShowMultiplayer(null), () => onCreate?.Invoke(), ShowSkins, () => ShowSettings(ShowHome), Quit };
         for (int i = 0; i < view.homeItems.Length && i < homeActions.Length; i++)
@@ -329,12 +356,31 @@ public partial class GameUI : MonoBehaviour
     }
 
     /// <summary>Puts the camera where the menu prefab's camera is (position, rotation, field of view).</summary>
+    /// Cue page: in front of the room's cue rack, turning a little with the mouse; to and from it the camera glides.
     public void PlaceMenuCamera(Camera c)
     {
-        var from = !view ? null : screen == Page.Skins && view.skinView ? view.skinView : view.view;
-        if (!from) return;
-        c.transform.SetPositionAndRotation(from.transform.position, from.transform.rotation);
-        c.fieldOfView = from.fieldOfView;
+        Vector3 pos;
+        Quaternion rot;
+        float fov;
+        if (screen == Page.Cues && rack)
+        {
+            fov = RackFov;
+            float d = (LevelBuilder.RackCueLength / 2 + 1.5f) / Mathf.Tan(fov * 0.5f * Mathf.Deg2Rad);
+            var m = Mouse.current != null ? Mouse.current.position.ReadValue() / new Vector2(Screen.width, Screen.height) - Vector2.one * 0.5f : Vector2.zero;
+            pos = rack.position + rack.forward * d;
+            rot = Quaternion.LookRotation(-rack.forward) * Quaternion.Euler(-m.y * 8, m.x * 14, 0);
+        }
+        else
+        {
+            var from = !view ? null : screen == Page.Skins && view.skinView ? view.skinView : view.view;
+            if (!from) return;
+            pos = from.transform.position;
+            rot = from.transform.rotation;
+            fov = from.fieldOfView;
+        }
+        float k = glideUntil > Time.unscaledTime || screen == Page.Cues ? 1 - Mathf.Exp(-6 * Time.unscaledDeltaTime) : 1;
+        c.transform.SetPositionAndRotation(Vector3.Lerp(c.transform.position, pos, k), Quaternion.Slerp(c.transform.rotation, rot, k));
+        c.fieldOfView = Mathf.Lerp(c.fieldOfView, fov, k);
     }
 
     public void ShowHome()
@@ -384,14 +430,11 @@ public partial class GameUI : MonoBehaviour
         pop = card;
         popT = 0;
         Label(card, "Pausa", 60, Ink, new Vector2(0, h / 2 - 80), new Vector2(w, 80), bold: true);
-        var items = new (string, Color, Action)[]
-        {
-            ("Riprendi", Worlds.ThemeOf(0).accent, resume),
-            ("Ricomincia", Soft, restart),
-            ("Impostazioni", Soft, () => ShowSettings(() => ShowPause(resume, restart, levelsMenu, menuLabel))),
-            (menuLabel, Soft, levelsMenu),
-        };
-        for (int i = 0; i < items.Length; i++)
+        var items = new List<(string, Color, Action)> { ("Riprendi", Worlds.ThemeOf(0).accent, resume) };
+        if (restart != null) items.Add(("Ricomincia", Soft, restart)); // online: no restart
+        items.Add(("Impostazioni", Soft, () => ShowSettings(() => ShowPause(resume, restart, levelsMenu, menuLabel))));
+        items.Add((menuLabel, Soft, levelsMenu));
+        for (int i = 0; i < items.Count; i++)
             Btn(card, items[i].Item1, items[i].Item2, Ink, new Vector2(0, 110 - i * 105), new Vector2(400, 84), items[i].Item3, round);
     }
 
@@ -650,20 +693,23 @@ public partial class GameUI : MonoBehaviour
 
     // the table turned upright (the prefab's skin camera), one cue ball per skin in rows and columns on it:
     // locked ones dark, the one in use with a gold ring; hover shows the name, a click on an open one uses it
+    // the table is the online table skin (GameManager.TableSkin), its button switches it in place; the room stays world 1's
     void ShowSkin(int s)
     {
         Hide();
         screen = Page.Skins;
-        ShowTable(0);
+        ShowTable(0, GameManager.TableSkin);
         if (!view || !view.skins || table == null) return;
         view.skins.gameObject.SetActive(true);
+        if (view.tableSkinButton && view.tableSkinButton.GetComponentInChildren<Text>() is { } label)
+            label.text = "Tavolo: " + Worlds.Themes[GameManager.TableSkin].name;
         int n = BallArt.Skins.Length;
         for (int i = 0; i < n; i++)
         {
             var ball = LevelBuilder.SpawnBall(0, view.SkinSpot(i, n, table.bounds.center), table.root).transform;
             spawned.Add(ball.gameObject);
             ball.localScale = Vector3.one * view.skinBallScale;
-            var mat = BallArt.Unlocked(i) ? BallArt.CueMaterial(i) : Dim(-1 - i, BallArt.CueMaterial(i));
+            var mat = BallArt.Unlocked(i) ? BallArt.CueMaterial(i) : Dim(-1 - i, BallArt.CueMaterial(i), 0.08f);
             foreach (var r in ball.GetComponentsInChildren<Renderer>()) r.sharedMaterial = mat;
             if (i == BallArt.SelectedSkin) CrownHull(ball);
             skinBalls[i] = ball;
@@ -679,40 +725,62 @@ public partial class GameUI : MonoBehaviour
             view.skinState.text = BallArt.SelectedSkin == s ? "IN USO" : BallArt.Unlocked(s) ? "CLIC PER USARLA" : "BLOCCATA: " + BallArt.Requirement(s);
     }
 
-    // online table colors: one world theme per skin, drawn as a flat table (wood frame, cushions, felt, diamonds)
-    void ShowTableSkin(int s)
+    // ---------- cue skins ----------
+
+    const float RackFov = 60;
+    Transform rack;                              // the room's "CueRack" (LevelBuilder.Room): child k = cue skin k
+    int cueShown;
+    Text cueName, cueState;
+    float glideUntil;                            // the menu camera glides (not snaps) until then: to and from the rack
+
+    // the room is the menu: the camera turns to the rack on the wall, the chosen cue slides out, a click uses an open one
+    void ShowCues()
     {
         Hide();
-        screen = Page.TableSkins;
-        skinShown = s;
-        var themes = Worlds.Themes;
-        var t = themes[s];
+        screen = Page.Cues;
+        glideUntil = Time.unscaledTime + 1.5f;
+        rack = table?.root ? table.root.Find("CueRack") : null;
         var full = Rect(root, Vector2.zero, Vector2.zero);
-        Box(full, new Color(0, 0, 0, 0.35f), Vector2.zero, Vector2.zero, null);
-
-        var top = Corner(full, new Vector2(0, 1));
-        Label(top, "M I N I P O O L", 26, new Color(1, 1, 1, 0.7f), new Vector2(90, -70), new Vector2(600, 40), TextAnchor.MiddleLeft, true, true);
-        Label(top, "Skin del tavolo (online)", 76, White, new Vector2(90, -135), new Vector2(1200, 90), TextAnchor.MiddleLeft, true, true);
-        Btn(Corner(full, new Vector2(1, 1)), "Skin bianca", Glass, White, new Vector2(-200, -80), new Vector2(280, 70), ShowSkins, round);
-
-        var center = Corner(full, new Vector2(0.5f, 0.5f));
-        var table = Box(center, t.wood, new Vector2(0, 60), new Vector2(640, 360), null);
-        Box(table, t.cushion, Vector2.zero, new Vector2(560, 280), null);
-        Box(table, t.felt, Vector2.zero, new Vector2(536, 256), null);
-        for (int i = 1; i < 8; i++)
-            foreach (var y in new[] { -160f, 160f })
-                if (i != 4) Box(table, new Color(0.95f, 0.92f, 0.82f), new Vector2(-280 + i * 70, y), Vector2.one * 10, circle);
-        ArrowButton(center, "‹", new Vector2(-420, 60), () => ShowTableSkin((s + themes.Length - 1) % themes.Length));
-        ArrowButton(center, "›", new Vector2(420, 60), () => ShowTableSkin((s + 1) % themes.Length));
-        Label(center, t.name, 56, White, new Vector2(0, -200), new Vector2(800, 70), bold: true, shadow: true);
-        for (int i = 0; i < themes.Length; i++)
-            Box(center, i == s ? White : new Color(1, 1, 1, 0.3f), new Vector2((i - (themes.Length - 1) / 2f) * 30, -255), Vector2.one * 14, circle);
-
-        bool inUse = GameManager.TableSkin == s;
-        Btn(center, "Indietro", Glass, White, new Vector2(-150, -360), new Vector2(260, 80), ShowHome, round);
-        Btn(center, inUse ? "In uso" : "Usa questa", inUse ? Soft : Worlds.ThemeOf(0).accent, Ink, new Vector2(150, -360), new Vector2(260, 80),
-            () => { GameManager.TableSkin = s; ShowTableSkin(s); }, round);
+        var f = view && view.skinName ? view.skinName.font : null;
+        Label(Corner(full, new Vector2(0, 1)), "STECCHE", 90, White, new Vector2(90, -110), new Vector2(1000, 110), TextAnchor.MiddleLeft, true, true, f);
+        var side = Corner(full, new Vector2(0.5f, 0.5f)); // right of the rack, like the skin page
+        cueName = Label(side, "", 64, White, new Vector2(330, 60), new Vector2(900, 80), TextAnchor.MiddleLeft, true, true, f);
+        cueState = Label(side, "", 32, new Color(1f, 0.85f, 0.4f), new Vector2(330, 0), new Vector2(900, 50), TextAnchor.MiddleLeft, true, true,
+            view && view.skinState ? view.skinState.font : null);
+        Outlined(Btn(side, "Indietro", Glass, White, new Vector2(460, -110), new Vector2(260, 70), LeaveCues, round).GetComponentInChildren<Text>());
+        CueInfo(BallArt.SelectedCue);
     }
+
+    void CueInfo(int s)
+    {
+        cueShown = s;
+        cueName.text = BallArt.Cues[s].name.ToUpperInvariant();
+        cueState.text = BallArt.SelectedCue == s ? "IN USO" : BallArt.CueUnlocked(s) ? "CLIC PER USARLA" : "BLOCCATA: " + BallArt.CueRequirement(s);
+    }
+
+    void LeaveCues()
+    {
+        glideUntil = Time.unscaledTime + 1.5f;
+        ShowSkins();
+    }
+
+    // the rack cue under the mouse: its column on screen, one rack slot wide
+    int HoveredCue()
+    {
+        var mouse = Mouse.current;
+        if (!rack || mouse == null || EventSystem.current && EventSystem.current.IsPointerOverGameObject()) return -1;
+        Vector2 m = mouse.position.ReadValue();
+        for (int i = 0; i < rack.childCount; i++)
+        {
+            var p = rack.GetChild(i).position;
+            Vector2 c = cam.WorldToScreenPoint(p), top = cam.WorldToScreenPoint(p + Vector3.up * LevelBuilder.RackCueLength / 2),
+                bottom = cam.WorldToScreenPoint(p - Vector3.up * LevelBuilder.RackCueLength / 2);
+            float half = Mathf.Abs(((Vector2)cam.WorldToScreenPoint(p + rack.right * LevelBuilder.RackSpacing / 2) - c).x);
+            if (m.y > bottom.y && m.y < top.y && Mathf.Abs(m.x - c.x) < half) return i;
+        }
+        return -1;
+    }
+
 
     // ---------- multiplayer ----------
 
@@ -727,9 +795,10 @@ public partial class GameUI : MonoBehaviour
         Label(top, "Multiplayer", 76, White, new Vector2(90, -135), new Vector2(1000, 90), TextAnchor.MiddleLeft, true, true);
 
         var center = Corner(full, new Vector2(0.5f, 0.5f));
-        Bar(center, new Vector2(0, 170), new Vector2(540, 92), 40,
+        Bar(center, new Vector2(0, 170), new Vector2(420, 92), 30,
             ("Crea minigolf", Worlds.ThemeOf(0).accent, Ink, () => onHost?.Invoke()),
-            ("Crea biliardo (2 giocatori)", Worlds.ThemeOf(0).accent, Ink, () => onHostPool?.Invoke()));
+            ("Crea biliardo (2 giocatori)", Worlds.ThemeOf(0).accent, Ink, () => onHostPool?.Invoke()),
+            ("Crea palla 9 (2 giocatori)", Worlds.ThemeOf(0).accent, Ink, () => onHostNine?.Invoke()));
         Label(center, "oppure entra con un codice", 28, new Color(1, 1, 1, 0.7f), new Vector2(0, 75), new Vector2(800, 40), shadow: true);
         var code = Input(center, "CODICE", new Vector2(-70, -10), new Vector2(420, 92));
         Btn(center, "Entra", Glass, White, new Vector2(220, -10), new Vector2(120, 92), () => onJoin?.Invoke(code.text), round);
@@ -738,8 +807,9 @@ public partial class GameUI : MonoBehaviour
         Btn(center, "Indietro", Glass, White, new Vector2(0, -330), new Vector2(260, 80), ShowHome, round);
     }
 
-    // start = null: the host can't start yet (8-ball needs exactly 2 players)
-    public void ShowLobby(string code, List<(int skin, Color color, string name)> players, bool host, Action start, Action leave, string mode)
+    // start = null: the host can't start yet (8-ball needs exactly 2 players). option = the aim lines setting: the host clicks it to change it
+    public void ShowLobby(string code, List<(int skin, Color color, string name)> players, bool host, Action start, Action leave, string mode,
+        string option, Action changeOption)
     {
         Hide();
         var full = Rect(root, Vector2.zero, Vector2.zero);
@@ -767,6 +837,8 @@ public partial class GameUI : MonoBehaviour
             Label(card, name, 22, White, new Vector2(0, -55), new Vector2(180, 30), bold: true);
         }
 
+        if (host) Btn(center, option, Glass, White, new Vector2(0, -170), new Vector2(560, 64), changeOption, round);
+        else Label(center, option, 28, White, new Vector2(0, -170), new Vector2(800, 44), bold: true, shadow: true);
         if (host && start != null) Btn(center, "Inizia", Worlds.ThemeOf(0).accent, Ink, new Vector2(150, -260), new Vector2(260, 84), start, round);
         Btn(center, "Esci", Glass, White, host ? new Vector2(-150, -260) : new Vector2(0, -260), new Vector2(260, 84), leave, round);
     }
@@ -996,6 +1068,13 @@ public partial class GameUI : MonoBehaviour
         }
         foreach (var (lv, t) in icons) Grow(t, lv == selected, view.ballScale);
         foreach (var (k, t) in skinBalls) Grow(t, k == skinShown, view.skinBallScale);
+        if (rack) // the chosen cue slides out of the rack toward the room, the equipped one a little less, the rest back
+            for (int i = 0; i < rack.childCount; i++)
+            {
+                var c = rack.GetChild(i);
+                float to = screen != Page.Cues ? 0 : i == cueShown ? 0.6f : i == BallArt.SelectedCue ? 0.25f : 0;
+                c.localPosition = new Vector3(c.localPosition.x, c.localPosition.y, Mathf.Lerp(c.localPosition.z, LevelBuilder.RackOut + to, 1 - Mathf.Exp(-14 * dt)));
+            }
         if (pop)
         {
             popT = Mathf.Min(1, popT + dt * 3.5f);
@@ -1058,12 +1137,19 @@ public partial class GameUI : MonoBehaviour
             }
             else if (esc) ShowHome();
         }
-        else if (screen == Page.TableSkins)
+        else if (screen == Page.Cues)
         {
-            int n = Worlds.Themes.Length;
-            if (move != 0) ShowTableSkin((skinShown + move + n) % n);
-            else if (enter) { GameManager.TableSkin = skinShown; ShowTableSkin(skinShown); }
-            else if (esc) ShowHome();
+            int hover = HoveredCue(), n = BallArt.Cues.Length;
+            if (hover >= 0 && hover != cueShown) CueInfo(hover);
+            bool click = hover >= 0 && Mouse.current.leftButton.wasPressedThisFrame;
+            if (move != 0) CueInfo((cueShown + move + n) % n);
+            else if ((enter || click) && BallArt.CueUnlocked(cueShown) && BallArt.SelectedCue != cueShown)
+            {
+                Sfx.Play(Sfx.Kind.Click, 1);
+                BallArt.SelectedCue = cueShown;
+                CueInfo(cueShown);
+            }
+            else if (esc) LeaveCues();
         }
         else if (screen == Page.MyLevels && esc) myLevelsBack?.Invoke();
         else if (screen == Page.Settings && esc)
@@ -1214,9 +1300,9 @@ public partial class GameUI : MonoBehaviour
     // darkened ball for levels that don't exist yet
     Material Dim(int n) => Dim(n, BallArt.Material(n));
 
-    Material Dim(int key, Material src)
+    Material Dim(int key, Material src, float shade = 0.3f)
     {
-        if (!dim.TryGetValue(key, out var m) || !m) dim[key] = m = new Material(src) { color = new Color(0.3f, 0.3f, 0.3f) };
+        if (!dim.TryGetValue(key, out var m) || !m) dim[key] = m = new Material(src) { color = new Color(shade, shade, shade) };
         return m;
     }
 
@@ -1265,8 +1351,17 @@ public partial class GameUI : MonoBehaviour
         t.horizontalOverflow = HorizontalWrapMode.Overflow;
         t.verticalOverflow = VerticalWrapMode.Overflow;
         t.raycastTarget = false;
-        if (shadow) t.gameObject.AddComponent<Shadow>().effectColor = new Color(0, 0, 0, 0.5f);
+        if (shadow) Outlined(t);
         return t;
+    }
+
+    // black outline: the text reads on any background (room, felt, wallpaper)
+    static void Outlined(Text t)
+    {
+        if (t.GetComponent<UnityEngine.UI.Outline>()) return;
+        var o = t.gameObject.AddComponent<UnityEngine.UI.Outline>();
+        o.effectColor = new Color(0, 0, 0, 0.9f);
+        o.effectDistance = new Vector2(2.5f, -2.5f);
     }
 
     Button Btn(Transform parent, string s, Color bg, Color fg, Vector2 pos, Vector2 size, Action click, Sprite sprite)

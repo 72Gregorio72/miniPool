@@ -38,7 +38,8 @@ public static partial class LevelBuilder
         ceiling = new(0.93f, 0.88f, 0.79f), lampShade = new(1f, 0.55f, 0.2f),
     };
 
-    static readonly Color CueLight = new(0.88f, 0.72f, 0.45f), CueDark = new(0.15f, 0.08f, 0.05f);
+    // cue rack: center height above the floor, standing cue length, distance between slots (GameUI.ShowCues frames it)
+    public const float RackMid = 6.9f, RackCueLength = 9.4f, RackSpacing = 0.6f, RackOut = 0.28f; // RackOut: cue axis off the wall
     static readonly Color[][] Paintings =
     {
         new[] { new Color(0.5f, 0.65f, 0.75f), new Color(0.35f, 0.5f, 0.28f), new Color(0.22f, 0.35f, 0.2f) },   // hills
@@ -122,14 +123,21 @@ public static partial class LevelBuilder
             {
                 float c = length / 2;
                 Rect(DarkWood, c - 2, c + 2, 1.6f, 12.5f, 0.1f);
-                for (int q = 0; q < 6; q++)
+                Rect(look.railWood, c - 2.2f, c + 2.2f, 2, 2.6f, 0.45f);
+                Rect(look.railWood, c - 2.2f, c + 2.2f, 10.6f, 11.2f, 0.45f);
+                // the cue skins (BallArt.Cues) as real Cue models, child k = skin k, locked ones dark; the skin menu
+                // (GameUI.ShowCues) looks at "CueRack" from its forward side
+                var rack = new GameObject("CueRack").transform;
+                rack.SetParent(lv.root, false);
+                rack.SetPositionAndRotation(start + along * c + Vector3.up * RackMid, Quaternion.LookRotation(inward));
+                int n = BallArt.Cues.Length;
+                for (int q = 0; q < n; q++)
                 {
-                    float s = c - 1.5f + q * 0.6f;
-                    Rect(CueDark, s - 0.09f, s + 0.09f, 2.2f, 6.2f, 0.16f);
-                    Rect(CueLight, s - 0.07f, s + 0.07f, 6.2f, 11.6f, 0.16f);
+                    var at = rack.position - rack.right * ((q - (n - 1) / 2f) * RackSpacing) + inward * RackOut; // left to right seen from the room
+                    var cue = Visual("RackCue", PrimitiveType.Cylinder, at, new Vector3(0.21f, RackCueLength, 0.21f), Quaternion.identity, Wood, rack, "Cue");
+                    BallArt.PaintCue(cue, q, !BallArt.CueUnlocked(q));
+                    foreach (var r in cue.GetComponentsInChildren<Renderer>()) r.shadowCastingMode = ShadowCastingMode.Off;
                 }
-                Rect(look.railWood, c - 2.2f, c + 2.2f, 2, 2.6f, 0.2f);
-                Rect(look.railWood, c - 2.2f, c + 2.2f, 10.6f, 11.2f, 0.2f);
                 continue;
             }
             // paintings: gold frame, three bands of color

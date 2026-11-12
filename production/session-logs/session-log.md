@@ -1821,3 +1821,57 @@ production/session-logs/.session-end.hash
 production/session-logs/session-log.md
 ---
 
+## Session End: 20261112_214651
+### Commits
+0c8c812 update
+### Uncommitted Changes
+Assets/Scripts/GameManager.cs
+Assets/Scripts/GameUI.cs
+Assets/Scripts/OrbitCamera.cs
+TODO.md
+---
+
+## Session End: 20261112_221606
+### Commits
+0c8c812 update
+### Uncommitted Changes
+Assets/Scripts/GameManager.cs
+Assets/Scripts/GameUI.cs
+Assets/Scripts/MultiplayerGame.Pool.cs
+Assets/Scripts/MultiplayerGame.cs
+Assets/Scripts/OrbitCamera.cs
+Assets/Scripts/PoolPhysics.cs
+Assets/Scripts/Rules.cs
+Assets/Settings/PC_RPAsset.asset
+Assets/Tests/EditMode/PhysicsTests.cs
+Assets/Tests/EditMode/RulesTests.cs
+CLAUDE.md
+ProjectSettings/ProjectSettings.asset
+TODO.md
+production/session-logs/.session-end.hash
+production/session-logs/session-log.md
+---
+
+## Session End: 20261112_223753
+### Commits
+0c8c812 update
+### Uncommitted Changes
+Assets/Scripts/BallArt.cs
+Assets/Scripts/CueController.cs
+Assets/Scripts/GameManager.cs
+Assets/Scripts/GameUI.cs
+Assets/Scripts/LevelBuilder.Room.cs
+Assets/Scripts/MultiplayerGame.Pool.cs
+Assets/Scripts/MultiplayerGame.cs
+Assets/Scripts/OrbitCamera.cs
+Assets/Scripts/PoolPhysics.cs
+Assets/Scripts/Rules.cs
+Assets/Settings/PC_RPAsset.asset
+Assets/Tests/EditMode/PhysicsTests.cs
+Assets/Tests/EditMode/RulesTests.cs
+CLAUDE.md
+TODO.md
+production/session-logs/.session-end.hash
+production/session-logs/session-log.md
+---
+

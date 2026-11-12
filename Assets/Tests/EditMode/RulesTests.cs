@@ -220,4 +220,23 @@ public class RulesTests
         Assert.AreEqual(180, angles[new UnityEngine.Vector2Int(1, 0)], "legacy V = 180");
         Assert.AreEqual("#>#\n#>#\n---\n> 1 0 180\n> 1 1 45\n", LevelBuilder.ToText(cells, out _, objs, angles));
     }
+
+    [Test] public void NineBall_LowestFirstAndPotKeepsTurn()
+    {
+        var s = Rules.NineBall(1, 1, new[] { 4 }, None);
+        Assert.IsTrue(!s.foul && s.keepTurn && !s.over);
+        Assert.IsFalse(Rules.NineBall(1, 1, None, None).keepTurn, "nothing potted: turn passes");
+        Assert.IsTrue(Rules.NineBall(2, 5, new[] { 2 }, None).foul, "hit the 5 before the 2");
+        Assert.IsTrue(Rules.NineBall(1, -1, None, None).foul);
+        Assert.IsTrue(Rules.NineBall(1, 1, new[] { 0 }, None).foul);
+    }
+
+    [Test] public void NineBall_NineWinsOnlyWithoutFoul()
+    {
+        Assert.IsTrue(Rules.NineBall(1, 1, new[] { 9 }, None).shooterWins, "combo on the 9 wins");
+        var s = Rules.NineBall(1, 3, new[] { 9 }, None);
+        Assert.IsTrue(s.foul && !s.over && s.respot, "9 potted with a foul: respotted");
+        s = Rules.NineBall(1, 1, None, new[] { 9 });
+        Assert.IsTrue(s.foul && s.respot, "9 off the table: foul and respot");
+    }
 }

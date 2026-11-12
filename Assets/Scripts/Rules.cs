@@ -98,6 +98,7 @@ public static class Rules
     public struct PoolShot
     {
         public bool foul, keepTurn, over, shooterWins; // foul: the other player gets the cue ball in hand
+        public bool respot;                             // 9-ball: the 9 goes back on its spot
         public int assign;                              // open table: the group the shooter gets (0 = still open)
         public string message;
     }
@@ -130,6 +131,31 @@ public static class Rules
         if (group == 0 && !isBreak && balls.Count > 0) s.assign = GroupOf(balls[0]);
         int mine = group != 0 ? group : s.assign;
         s.keepTurn = mine == 0 ? balls.Count > 0 : balls.Any(n => GroupOf(n) == mine);
+        return s;
+    }
+
+    // ---------- 9-ball (online "Palla 9", 2 players, turns) ----------
+
+    /// <summary>One 9-ball shot. lowest = lowest numbered ball on the table before the shot: it must be hit first.
+    /// Any ball potted keeps the turn; the 9 potted without a foul wins (break and combos too); a foul gives the cue ball in hand.
+    /// Simplified: no push out, no three-foul rule, no rail rule; a 9 potted with a foul or off the table is respotted, other balls off the table stay out.</summary>
+    public static PoolShot NineBall(int lowest, int firstHit, IReadOnlyList<int> potted, IReadOnlyCollection<int> lost)
+    {
+        var s = new PoolShot();
+        if (potted.Contains(0)) s.message = "Bianca in buca";
+        else if (lost.Contains(0)) s.message = "Bianca fuori dal tavolo";
+        else if (firstHit < 0) s.message = "Nessuna palla colpita";
+        else if (firstHit != lowest) s.message = $"Dovevi colpire prima la {lowest}";
+        else if (lost.Count > 0) s.message = "Palla fuori dal tavolo";
+        s.foul = s.message != null;
+        if (!s.foul && potted.Contains(9))
+        {
+            s.over = s.shooterWins = true;
+            s.message = "9 in buca: vittoria";
+            return s;
+        }
+        s.respot = potted.Contains(9) || lost.Contains(9);
+        s.keepTurn = !s.foul && potted.Any(n => n != 0);
         return s;
     }
 }

@@ -26,6 +26,8 @@ public class CueController : MonoBehaviour
     public Transform Stick => stick;
     bool pulling;
     public bool Pulling => pulling; // onboarding hints (GameManager.Hint)
+    /// <summary>Current cue pose, sent to the other players online (MultiplayerGame.SendAim).</summary>
+    public (float power, Vector2 tip, float elevation) Aim => (power, tip, elevation);
     float power;
     Vector2 tip; // in ball radii, max 0.5 (beyond that a real cue miscues)
     float elevation; // degrees the butt is raised, 0..PoolPhysics.MaxElevation
@@ -34,10 +36,18 @@ public class CueController : MonoBehaviour
 
     void Awake()
     {
-        stick = LevelBuilder.Visual("Cue", PrimitiveType.Cylinder, Vector3.zero, new Vector3(0.21f, CueLength, 0.21f), Quaternion.identity, new Color(0.85f, 0.7f, 0.45f), transform).transform;
+        stick = NewStick(transform);
     }
 
-    void OnEnable() => Show(true);
+    /// <summary>A cue model (also the other players' cues online).</summary>
+    public static Transform NewStick(Transform parent) =>
+        LevelBuilder.Visual("Cue", PrimitiveType.Cylinder, Vector3.zero, new Vector3(0.21f, CueLength, 0.21f), Quaternion.identity, new Color(0.85f, 0.7f, 0.45f), parent).transform;
+
+    void OnEnable()
+    {
+        if (stick) BallArt.PaintCue(stick.gameObject, BallArt.SelectedCue); // the skin may have changed in the menu
+        Show(true);
+    }
 
     void OnDisable()
     {
@@ -127,14 +137,14 @@ public class CueController : MonoBehaviour
         }
 
         Show(true); // after the input: the HUD shows this frame's tip and power
-        PlaceStick(orbit.AimDirection);
+        Pose(stick, cue.transform.position, orbit.AimDirection, tip, elevation, power);
         if (guide) UpdateGuide(orbit.AimDirection);
     }
 
-    void PlaceStick(Vector3 dir)
+    /// <summary>Puts a cue model behind the ball at <paramref name="from"/>: aim, english, raised butt, pulled back with power.</summary>
+    public static void Pose(Transform stick, Vector3 from, Vector3 dir, Vector2 tip, float elevation, float power)
     {
         // stick behind the ball, tilted, tip offset by the english, pulled back with power
-        var from = cue.transform.position;
         // below 0 (jump shot) the cue doesn't rotate around the ball: it keeps a slight downward tilt and drops, the tip low on the ball
         float tilt = Mathf.Max(Tilt, elevation) * Mathf.Deg2Rad;
         var axis = (dir * Mathf.Cos(tilt) + Vector3.down * Mathf.Sin(tilt)).normalized; // butt raised
