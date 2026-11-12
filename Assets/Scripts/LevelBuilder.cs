@@ -8,11 +8,45 @@ public static partial class LevelBuilder
     public const float TableHeight = 5.3f; // 76 cm at 1/7 scale
     const string BallChars = "0123456789ABCDEF*"; // * = grey ball (BallArt.Grey)
 
+    // One floor of a level (a "sheet"): a flat table of its own at y = floor * FloorStep, with its own tiles, walls and
+    // modules. Floors don't know each other: the same (x, z) can hold something on every floor. The game holds the
+    // lowest one (`main`), which shares its balls, root and clock with the others; a ball is on Sheet(its position).
     public class Level
     {
+        public int floor;
+        public Level main;         // the lowest sheet: the Level the game holds
+        public List<Level> sheets; // main only: every floor's sheet, bottom to top (main first)
+        public HashSet<Vector2Int> columns = new(); // this floor's cells that are columns down to what's under them (ColumnTag, SolidTag)
+
+        // the floor a ball at p is on: the highest one at or under it that has table (or a platform) there
+        public Level Sheet(Vector3 p)
+        {
+            var all = main.sheets;
+            if (all.Count == 1) return main;
+            float bottom = p.y - Ball.Radius + FloorStep / 2;
+            Level open = null;
+            for (int i = all.Count - 1; i >= 0; i--)
+            {
+                var s = all[i];
+                if (s.floor * FloorStep > bottom) continue;
+                if (!IsVoid(At(s.ground, CellOf(p))) || s.PlatformAt(p) != null) return s;
+                open ??= s;
+            }
+            return open ?? all[0];
+        }
+
+        // how far down the sides of the table on cell c go: a slab, or (a column) down to what's under it
+        public float SkirtY(Vector2Int c)
+        {
+            if (!columns.Contains(c)) return BaseY(c) - FloorThickness;
+            for (int i = main.sheets.IndexOf(this) - 1; i >= 0; i--)
+                if (!IsVoid(At(main.sheets[i].ground, c))) return main.sheets[i].BaseY(c);
+            return main.BaseY(c) - FloorThickness;
+        }
+
         public Transform root;
         public char[,] tiles;  // [x, row]: what's on top (a module, or the table itself)
-        public char[,] ground; // [x, row]: the table under it (felt, rail, bridge...): a module stands on it
+        public char[,] ground; // [x, row]: the table under it (felt, rail...): a module stands on it
         public List<Ball> balls = new();
         public List<Wall> walls = new();
         public readonly Dictionary<Vector2Int, List<Wall>> wallGrid = new(); // walls near each cell, for physics
@@ -36,9 +70,10 @@ public static partial class LevelBuilder
         }
 
         public Dictionary<Vector2Int, int> angles = new(); // oriented tiles (OrientedChars) from the file; boosters without one use their char
-        public Dictionary<Vector2Int, int> floors = new(); // floor of raised cells (missing = 0), y = floor * FloorStep
         public float time;                                 // physics clock: timed walls, platforms
         public readonly List<Mover> movers = new();        // gates and timed walls
+        public Dictionary<(int f, Vector2Int c), (List<(int f, Vector2Int c)> nodes, bool loop)> trackPaths; // main only: PlatformTracks, sheet coordinates
+        public readonly List<TimedSpikesModule> timedSpikes = new();
         public readonly List<Platform> platforms = new();
         public readonly List<(Vector2Int cell, float radius, float pull)> magnets = new();
         public readonly Dictionary<Vector2Int, GameObject> modules = new(); // module prefab instance per cell
@@ -72,7 +107,9 @@ public static partial class LevelBuilder
         {
             felt.Clear();
             var c = CellOf(p);
-            if (!stacks.TryGetValue(c, out var st)) felt.Add((ModuleTileAt(p), AngleAt(c)));
+            var plat = PlatformAt(p);
+            if (plat != null) { foreach (var r in plat.riders) felt.Add((r, 0)); } // on a platform: only what rides on it
+            else if (!stacks.TryGetValue(c, out var st)) felt.Add((At(tiles, c), AngleAt(c)));
             else
                 foreach (var l in st)
                     if (StackHeight(l.c) == 0 && Mathf.Abs(p.y - Ball.Radius - l.y) < FloorStep / 2) felt.Add((l.c, l.angle));
@@ -82,24 +119,17 @@ public static partial class LevelBuilder
         // the layer of module ch on a pile at c (null = not on a pile)
         public Layer LayerOf(Vector2Int c, char ch) => stacks.TryGetValue(c, out var st) ? st.Find(l => l.c == ch) : null;
 
-        // where the cell's (first) module stands: felt, the top of a rail, a bridge's deck, a platform's tube under its track
+        // where the cell's (first) module stands: felt, the top of a rail, a platform's tube under its track
         public float ModuleY(Vector2Int c)
         {
             char g = At(ground, c);
             float y = SurfaceY(c, c);
-            return g == Bridge ? DeckY(c) : g == '#' ? y + RailHeight : g == ' ' ? y - TrackDrop : y;
+            return g == '#' ? y + RailHeight : g == ' ' ? y - TrackDrop : y;
         }
         public Vector2Int? portalBlue, portalOrange;
 
-        // felt height of cell c (under a bridge: BridgeClearance floors below its deck)
-        public float BaseY(Vector2Int c)
-        {
-            int f = floors.TryGetValue(c, out int n) ? n : 0;
-            return (At(ground, c) == Bridge ? Mathf.Max(f - BridgeClearance, 0) : f) * FloorStep;
-        }
-
-        // a bridge's deck: on the cell's floor
-        public float DeckY(Vector2Int c) => (floors.TryGetValue(c, out int f) ? f : 0) * FloorStep;
+        // felt height of this floor (the same on every cell)
+        public float BaseY(Vector2Int c) => floor * FloorStep;
 
         public float AngleAt(Vector2Int c) => angles.TryGetValue(c, out int a) ? a : Mathf.Max(BoostChars.IndexOf(At(tiles, c)), 0) * 90;
 
@@ -112,8 +142,8 @@ public static partial class LevelBuilder
             return y + FloorStep * Mathf.Clamp01(Vector2.Dot(q - (Vector2)c, new Vector2(d.x, d.z)) + 0.5f);
         }
 
-        // height of what holds a ball centered over p; null = it drops (pocket hole, empty cell without a platform).
-        // p.y matters on a bridge (on the deck or under it) and on a raised gate / timed wall (a ball it lifted stands on top)
+        // height of what holds a ball centered over p on this floor; null = it drops (pocket hole, empty cell without a platform).
+        // p.y matters on a raised gate / timed wall (a ball it lifted stands on top)
         public float? GroundAt(Vector3 p)
         {
             if (PocketAt(p) != null) return null;
@@ -136,19 +166,7 @@ public static partial class LevelBuilder
                 // the top of a block is a floor too
                 if (At(tiles, c) is Block or WindFan && bottom > ModuleY(c) + BlockHeight - FloorStep / 2) return ModuleY(c) + BlockHeight;
             }
-            if (OnDeck(c, p)) return DeckY(c);
             return IsVoid(At(ground, c)) ? null : SurfaceY(c, new Vector2(p.x, p.z));
-        }
-
-        // p is on the deck of a bridge (not under it)
-        bool OnDeck(Vector2Int c, Vector3 p) => At(ground, c) == Bridge && p.y - Ball.Radius > DeckY(c) - FloorStep / 2;
-
-        // the module a ball at p feels: a module on a bridge's deck does nothing to a ball passing under it
-        public char ModuleTileAt(Vector3 p)
-        {
-            var c = CellOf(p);
-            char t = At(tiles, c);
-            return At(ground, c) == Bridge && !OnDeck(c, p) ? Bridge : t;
         }
 
         // false = the ball drops here (into a pocket hole or off the table)
@@ -159,7 +177,8 @@ public static partial class LevelBuilder
             for (int i = 0; i < platforms.Count; i++)
             {
                 var pl = platforms[i];
-                if (!pl.saw && Mathf.Abs(p.x - pl.center.x) <= 0.5f && Mathf.Abs(p.z - pl.center.z) <= 0.5f) return pl;
+                if (!pl.saw && Mathf.Abs(p.x - pl.center.x) <= 0.5f && Mathf.Abs(p.z - pl.center.z) <= 0.5f
+                    && Mathf.Abs(p.y - Ball.Radius - pl.center.y) < FloorStep * 0.6f) return pl; // on it, not a floor above or below
             }
             return null;
         }
@@ -193,7 +212,9 @@ public static partial class LevelBuilder
     //                                             world position = (sx, sz) / 3 from the grid's bottom-left tile center (tile (x, z) = sub (3x, 3z))
     //   angles:         "<booster> <x> <z> <deg>" tile coords; degrees clockwise from the far side (0 = '^', 90 = '>');
     //                                             for every oriented tile (OrientedChars), the first char is always a booster char
-    //   floors:         "= <x> <z> <floor>"       tile coords; the cell is raised to y = floor * FloorStep (missing = 0)
+    // A line "piano <n> [<x> <z>]" starts the grid (and its "---" section) of floor n, its bottom-left tile on (x, z);
+    // what comes before the first one is floor 0 (ReadFloors).
+    //   old floors:     "= <x> <z> <floor>"       old files: one grid, the cell is raised to that floor (ReadFloors moves it there)
     public const int Sub = 3;
     public const float FloorStep = 0.5f; // one floor = one ball diameter; a ramp climbs it over one tile (~27°)
     const string Separator = "---";
@@ -247,7 +268,7 @@ public static partial class LevelBuilder
     public const string UnderTag = "sotto";
 
     // modules that stand on the table instead of replacing it: on felt, on a rail or on a bridge's deck
-    public const string OnTopChars = "X><^VJTYIMWKGLQNZPU=@%";
+    public const string OnTopChars = "X><^VJTYIMWKGLQNZPU=@%!&}{";
 
     public static bool OnTop(char c) => OnTopChars.IndexOf(c) >= 0;
 
@@ -283,6 +304,126 @@ public static partial class LevelBuilder
     }
 
     public static Dictionary<Vector2Int, List<(char c, int angle)>> CopyAbove(Dictionary<Vector2Int, List<(char c, int angle)>> above) => above.ToDictionary(kv => kv.Key, kv => kv.Value.ToList());
+
+    /// <summary>One floor of a level text: sparse cells keyed by world (x, z), objects on the 3x finer grid.</summary>
+    public class FloorPlan
+    {
+        public Dictionary<Vector2Int, char> cells = new(), objects = new(), under = new();
+        public Dictionary<Vector2Int, int> angles = new();
+        public Dictionary<Vector2Int, List<(char c, int angle)>> above = new();
+        public HashSet<Vector2Int> solid = new(); // cells that are columns: full down to what's under them (ColumnTag)
+    }
+
+    public const string FloorTag = "piano";
+    // a line with just this word: every cell is a column down to what's under it (how old levels were built)
+    public const string SolidTag = "pieno";
+    // "colonne <x>,<z> <x>,<z> ..." in a floor's section: only these cells of the floor are columns (editor switch "Colonna piena")
+    public const string ColumnTag = "colonne";
+    static readonly System.Text.RegularExpressions.Regex FloorLine = new($@"^{FloorTag} (-?\d+)(?: (-?\d+) (-?\d+))?\s*$");
+
+    /// <summary>
+    /// The level text split into its floors (origin = world cell of the text's bottom-left). Old files (one grid + "= x z floor" lines) are converted: every cell goes
+    /// to its floor, a bridge becomes felt on its floor with felt BridgeClearance floors under it, and every cell is a column (`FloorPlan.solid`).
+    /// </summary>
+    public static SortedDictionary<int, FloorPlan> ReadFloors(string text, Vector2Int origin = default)
+    {
+        var plans = new SortedDictionary<int, FloorPlan>();
+        FloorPlan P(int f)
+        {
+            if (!plans.TryGetValue(f, out var p)) plans[f] = p = new FloorPlan();
+            return p;
+        }
+        bool raised = false;
+        int floor = 0;
+        var at = Vector2Int.zero;
+        var chunk = new System.Text.StringBuilder();
+        void Flush()
+        {
+            var objects = new Dictionary<Vector2Int, char>();
+            var angles = new Dictionary<Vector2Int, int>();
+            var floors = new Dictionary<Vector2Int, int>();
+            var under = new Dictionary<Vector2Int, char>();
+            var above = new Dictionary<Vector2Int, List<(char c, int angle)>>();
+            string part = chunk.ToString();
+            var cells = ToCells(part, origin + at, objects, angles, floors, under, above);
+            chunk.Clear();
+            foreach (var f in SectionLines(part).Where(f => f.Length > 1 && f[0] == ColumnTag))
+                foreach (var xz in f.Skip(1).Select(s => s.Split(',')))
+                    if (xz.Length == 2 && int.TryParse(xz[0], out int x) && int.TryParse(xz[1], out int z)) P(floor).solid.Add(origin + at + new Vector2Int(x, z));
+            var low = new Dictionary<Vector2Int, int>(); // old bridges: the floor of the felt under the deck
+            foreach (var kv in cells)
+            {
+                var k = kv.Key;
+                char c = kv.Value;
+                int n = floors.GetValueOrDefault(k), f = floor + n;
+                raised |= n != 0;
+                if (c == Bridge || (OnTop(c) && under.GetValueOrDefault(k) == Bridge))
+                {
+                    low[k] = floor + Mathf.Max(n - BridgeClearance, 0);
+                    if (low[k] != f) P(low[k]).cells[k] = '.';
+                    if (c == Bridge) c = '.';
+                }
+                else if (under.TryGetValue(k, out char u)) P(f).under[k] = u;
+                var p = P(f);
+                p.cells[k] = c;
+                if (angles.TryGetValue(k, out int a)) p.angles[k] = a;
+                if (above.TryGetValue(k, out var pile)) p.above[k] = pile;
+            }
+            foreach (var o in objects) // an old file's ball starts on the felt of its tile (under a bridge)
+            {
+                var t = new Vector2Int(Mathf.RoundToInt(o.Key.x / (float)Sub), Mathf.RoundToInt(o.Key.y / (float)Sub));
+                P(low.TryGetValue(t, out int l) ? l : floor + floors.GetValueOrDefault(t)).objects[o.Key] = o.Value;
+            }
+        }
+        foreach (var line in AllLines(text))
+        {
+            var m = FloorLine.Match(line);
+            if (!m.Success) { chunk.Append(line).Append('\n'); continue; }
+            Flush();
+            floor = int.Parse(m.Groups[1].Value);
+            at = m.Groups[2].Success ? new Vector2Int(int.Parse(m.Groups[2].Value), int.Parse(m.Groups[3].Value)) : Vector2Int.zero;
+        }
+        Flush();
+        if (raised || SectionLines(text).Any(f => f.Length == 1 && f[0] == SolidTag))
+            foreach (var p in plans.Values) p.solid.UnionWith(p.cells.Keys);
+        return plans;
+    }
+
+    /// <summary>
+    /// The level text of these floors: floor 0 first as a plain grid, the others after their "piano" line.
+    /// `min` = world cell of the text's bottom-left; `extra` = lines for the "---" section (tiri, falli, ...).
+    /// </summary>
+    public static string WriteFloors(SortedDictionary<int, FloorPlan> plans, out Vector2Int min, string extra = "")
+    {
+        var used = plans.Where(kv => kv.Value.cells.Count > 0).ToList();
+        var keys = used.SelectMany(kv => kv.Value.cells.Keys).ToList();
+        min = keys.Count == 0 ? Vector2Int.zero : new Vector2Int(keys.Min(k => k.x), keys.Min(k => k.y));
+        var sb = new System.Text.StringBuilder();
+        // nothing is under the lowest floor, so its cells count only when it is alone; every cell a column = one SolidTag line
+        bool solid = used.Count > 0 && used.Skip(used.Count > 1 ? 1 : 0).All(kv => kv.Value.cells.Keys.All(kv.Value.solid.Contains));
+        foreach (var kv in used)
+        {
+            var p = kv.Value;
+            string text = ToText(p.cells, out var at, p.objects, p.angles, null, p.under, p.above);
+            var cols = p.solid.Where(p.cells.ContainsKey).OrderBy(k => k.y).ThenBy(k => k.x).Select(k => $" {k.x - at.x},{k.y - at.y}").ToList();
+            if (!solid && kv.Key != used[0].Key && cols.Count > 0) text = AddLines(text, ColumnTag + string.Concat(cols) + "\n");
+            if (kv.Key != 0 || at != min) sb.Append($"{FloorTag} {kv.Key} {at.x - min.x} {at.y - min.y}\n");
+            sb.Append(text);
+        }
+        return AddLines(sb.ToString(), (solid ? SolidTag + "\n" : "") + extra);
+    }
+
+    /// <summary>Adds lines to the "---" section of the text's last floor.</summary>
+    public static string AddLines(string text, string lines)
+    {
+        if (lines == "") return text;
+        var all = AllLines(text);
+        int last = System.Array.FindLastIndex(all, l => FloorLine.IsMatch(l));
+        return text + (all.Skip(last + 1).Any(l => l.Trim() == Separator) ? "" : Separator + "\n") + lines;
+    }
+
+    // the highest floor with a cell on k: what a player pointing at the table from above means
+    static FloorPlan TopAt(SortedDictionary<int, FloorPlan> plans, Vector2Int k) => plans.Values.LastOrDefault(p => p.cells.ContainsKey(k));
 
     public static Dictionary<Vector2Int, int> ParseFloors(string text)
     {
@@ -327,17 +468,19 @@ public static partial class LevelBuilder
                 if (cells.TryGetValue(min + u.Key, out var top) && OnTop(top)) under[min + u.Key] = u.Value;
         if (above != null)
             foreach (var u in ParseAbove(text))
-                if (cells.TryGetValue(min + u.Key, out var bottom) && Stackable(bottom)) above[min + u.Key] = u.Value;
+                if (cells.TryGetValue(min + u.Key, out var bottom) && PileBase(bottom)) above[min + u.Key] = u.Value;
         return cells;
     }
 
     public static string ToText(Dictionary<Vector2Int, char> cells, out Vector2Int min, Dictionary<Vector2Int, char> objects = null, Dictionary<Vector2Int, int> angles = null,
-        Dictionary<Vector2Int, int> floors = null, Dictionary<Vector2Int, char> under = null, Dictionary<Vector2Int, List<(char c, int angle)>> above = null)
+        Dictionary<Vector2Int, int> floors = null, Dictionary<Vector2Int, char> under = null, Dictionary<Vector2Int, List<(char c, int angle)>> above = null,
+        (Vector2Int min, Vector2Int max)? box = null)
     {
         min = Vector2Int.zero;
-        if (cells.Count == 0) return "";
-        min = new Vector2Int(cells.Keys.Min(k => k.x), cells.Keys.Min(k => k.y));
-        var max = new Vector2Int(cells.Keys.Max(k => k.x), cells.Keys.Max(k => k.y));
+        if (cells.Count == 0 && box == null) return "";
+        // box: the grid covers exactly these cells (every floor of a level on the same grid)
+        min = box?.min ?? new Vector2Int(cells.Keys.Min(k => k.x), cells.Keys.Min(k => k.y));
+        var max = box?.max ?? new Vector2Int(cells.Keys.Max(k => k.x), cells.Keys.Max(k => k.y));
         var sb = new System.Text.StringBuilder();
         for (int z = max.y; z >= min.y; z--)
         {
@@ -347,7 +490,7 @@ public static partial class LevelBuilder
         var a = angles?.Where(kv => cells.TryGetValue(kv.Key, out var c) && IsOriented(c)).OrderBy(kv => kv.Key.y).ThenBy(kv => kv.Key.x).ToList();
         var fl = floors?.Where(kv => kv.Value != 0 && cells.ContainsKey(kv.Key)).OrderBy(kv => kv.Key.y).ThenBy(kv => kv.Key.x).ToList();
         var un = under?.Where(kv => cells.TryGetValue(kv.Key, out var c) && OnTop(c)).OrderBy(kv => kv.Key.y).ThenBy(kv => kv.Key.x).ToList();
-        var ab = above?.Where(kv => kv.Value.Count > 0 && cells.TryGetValue(kv.Key, out var c) && Stackable(c)).OrderBy(kv => kv.Key.y).ThenBy(kv => kv.Key.x).ToList();
+        var ab = above?.Where(kv => kv.Value.Count > 0 && cells.TryGetValue(kv.Key, out var c) && PileBase(c)).OrderBy(kv => kv.Key.y).ThenBy(kv => kv.Key.x).ToList();
         if ((objects != null && objects.Count > 0) || (a != null && a.Count > 0) || (fl != null && fl.Count > 0) || (un != null && un.Count > 0) || (ab != null && ab.Count > 0))
         {
             sb.Append(Separator).Append('\n');
@@ -396,7 +539,7 @@ public static partial class LevelBuilder
         if (BoostChars.IndexOf(c) >= 0) c = '>';
         if (c is Ramp or PlatformTile or DiagRail or WindFan or Track or Saw) angle = ((Mathf.RoundToInt(angle / 90f) * 90) % 360 + 360) % 360;
         bool oriented = IsOriented(c);
-        if (stack && above != null && Stackable(c) && cells.TryGetValue(cell, out var bottom) && Stackable(bottom))
+        if (stack && above != null && Stackable(c) && cells.TryGetValue(cell, out var bottom) && (Stackable(bottom) || (bottom == PlatformTile && RidesPlatform(c))))
         {
             if (!above.TryGetValue(cell, out var pile)) pile = new();
             var (topC, topA) = pile.Count > 0 ? pile[^1] : (bottom, angles.GetValueOrDefault(cell));
@@ -452,32 +595,40 @@ public static partial class LevelBuilder
 
     public static bool IsOverlay(string piece) => SectionLines(piece).Any(f => f.Length == 1 && f[0] == OverlayTag);
 
-    // the world cells a piece covers with its middle on `at`, turned `rot` clockwise degrees (multiples of 90);
-    // its angles (turned with it) and floors come out keyed by world cell too
-    public static Dictionary<Vector2Int, char> PieceCells(string piece, Vector2Int at, int rot,
-        Dictionary<Vector2Int, int> angles = null, Dictionary<Vector2Int, int> floors = null, Dictionary<Vector2Int, char> under = null, Dictionary<Vector2Int, List<(char c, int angle)>> above = null)
+    // the piece's floors with its middle on `at`, turned `rot` clockwise degrees (multiples of 90), keyed by world cell
+    static SortedDictionary<int, FloorPlan> PiecePlans(string piece, Vector2Int at, int rot)
     {
-        var pAngles = new Dictionary<Vector2Int, int>();
-        var pFloors = new Dictionary<Vector2Int, int>();
-        var pUnder = new Dictionary<Vector2Int, char>();
-        var pAbove = new Dictionary<Vector2Int, List<(char c, int angle)>>();
-        var pCells = ToCells(piece, Vector2Int.zero, null, pAngles, pFloors, pUnder, pAbove);
-        var placed = new Dictionary<Vector2Int, char>();
-        if (pCells.Count == 0) return placed;
-        var pivot = new Vector2Int((pCells.Keys.Min(k => k.x) + pCells.Keys.Max(k => k.x)) / 2, (pCells.Keys.Min(k => k.y) + pCells.Keys.Max(k => k.y)) / 2);
+        var src = ReadFloors(piece);
+        var placed = new SortedDictionary<int, FloorPlan>();
+        var keys = src.Values.SelectMany(p => p.cells.Keys).ToList();
+        if (keys.Count == 0) return placed;
+        var pivot = new Vector2Int((keys.Min(k => k.x) + keys.Max(k => k.x)) / 2, (keys.Min(k => k.y) + keys.Max(k => k.y)) / 2);
         int turns = ((rot / 90) % 4 + 4) % 4;
-        foreach (var kv in pCells)
+        Vector2Int W(Vector2Int k)
         {
-            var d = kv.Key - pivot;
+            var d = k - pivot;
             for (int i = 0; i < turns; i++) d = new Vector2Int(d.y, -d.x); // clockwise: far side (+z) -> right (+x)
-            var w = at + d;
-            placed[w] = kv.Value;
-            if (angles != null && pAngles.TryGetValue(kv.Key, out int a)) angles[w] = (a + turns * 90) % 360;
-            if (floors != null && pFloors.TryGetValue(kv.Key, out int f)) floors[w] = f;
-            if (under != null && pUnder.TryGetValue(kv.Key, out char u)) under[w] = u;
-            if (above != null && pAbove.TryGetValue(kv.Key, out var pile)) above[w] = pile.Select(e => (e.c, IsOriented(e.c) ? (e.angle + turns * 90) % 360 : e.angle)).ToList();
+            return at + d;
+        }
+        foreach (var kv in src)
+        {
+            var p = placed[kv.Key] = new FloorPlan();
+            foreach (var c in kv.Value.cells) p.cells[W(c.Key)] = c.Value;
+            foreach (var a in kv.Value.angles) p.angles[W(a.Key)] = (a.Value + turns * 90) % 360;
+            foreach (var u in kv.Value.under) p.under[W(u.Key)] = u.Value;
+            foreach (var k in kv.Value.solid) p.solid.Add(W(k));
+            foreach (var ab in kv.Value.above) p.above[W(ab.Key)] = ab.Value.Select(e => (e.c, IsOriented(e.c) ? (e.angle + turns * 90) % 360 : e.angle)).ToList();
         }
         return placed;
+    }
+
+    /// <summary>The world cells a piece covers (every floor of it) with its middle on `at`, turned `rot` degrees.</summary>
+    public static Dictionary<Vector2Int, char> PieceCells(string piece, Vector2Int at, int rot)
+    {
+        var cells = new Dictionary<Vector2Int, char>();
+        foreach (var p in PiecePlans(piece, at, rot).Values)
+            foreach (var c in p.cells) cells[c.Key] = c.Value;
+        return cells;
     }
 
     // a ball or the rack starts on this cell (nothing may be built there)
@@ -501,79 +652,74 @@ public static partial class LevelBuilder
     // Overlay pieces (OverlayTag line in the file, e.g. a strip of spikes) go on top of the table instead: see below.
     public static string AttachPiece(string text, string piece, Vector2Int at, int rot)
     {
-        var objects = new Dictionary<Vector2Int, char>();
-        var angles = new Dictionary<Vector2Int, int>();
-        var floors = new Dictionary<Vector2Int, int>();
-        var under = new Dictionary<Vector2Int, char>();
-        var above = new Dictionary<Vector2Int, List<(char c, int angle)>>();
-        var cells = ToCells(text, Vector2Int.zero, objects, angles, floors, under, above);
-        var pAngles = new Dictionary<Vector2Int, int>();
-        var pFloors = new Dictionary<Vector2Int, int>();
-        var pUnder = new Dictionary<Vector2Int, char>();
-        var pAbove = new Dictionary<Vector2Int, List<(char c, int angle)>>();
-        var placed = PieceCells(piece, at, rot, pAngles, pFloors, pUnder, pAbove);
+        var plans = ReadFloors(text);
+        var placed = PiecePlans(piece, at, rot);
         if (placed.Count == 0) return null;
+        void Put(FloorPlan to, FloorPlan from, Vector2Int k)
+        {
+            to.cells[k] = from.cells[k];
+            if (from.angles.TryGetValue(k, out int a)) to.angles[k] = a; else to.angles.Remove(k);
+            if (from.under.TryGetValue(k, out char u)) to.under[k] = u; else to.under.Remove(k);
+            if (from.above.TryGetValue(k, out var pile)) to.above[k] = pile; else to.above.Remove(k);
+            if (from.solid.Contains(k)) to.solid.Add(k); else to.solid.Remove(k);
+        }
 
         if (IsOverlay(piece))
         {
-            // every cell lands on the table (rails anywhere but a pocket, the rest on felt / modules), never on a starting ball;
-            // it replaces what's there and keeps that cell's floor
-            foreach (var kv in placed)
-                if (!cells.TryGetValue(kv.Key, out var t) || t == 'O' || (kv.Value != '#' && !IsFloor(t)) || UnderObject(objects, kv.Key)) return null;
-            foreach (var kv in placed)
-            {
-                cells[kv.Key] = kv.Value;
-                under.Remove(kv.Key);
-                if (pAngles.TryGetValue(kv.Key, out int a)) angles[kv.Key] = a; else angles.Remove(kv.Key);
-                if (pAbove.TryGetValue(kv.Key, out var pile)) above[kv.Key] = pile; else above.Remove(kv.Key);
-            }
-            return ToText(cells, out _, objects, angles, floors, under, above);
+            // every cell lands on the table, on the highest floor there (rails anywhere but a pocket, the rest on felt /
+            // modules), never on a starting ball; it replaces what's there
+            foreach (var p in placed.Values)
+                foreach (var kv in p.cells)
+                    if (TopAt(plans, kv.Key) is not { } top || top.cells[kv.Key] == 'O' || (kv.Value != '#' && !IsFloor(top.cells[kv.Key])) || UnderObject(top.objects, kv.Key)) return null;
+            foreach (var p in placed.Values)
+                foreach (var k in p.cells.Keys) Put(TopAt(plans, k), p, k);
+            return WriteFloors(plans, out _);
         }
 
-        var table = new Dictionary<Vector2Int, char>(cells);
-        var overlap = new List<Vector2Int>();
-        foreach (var kv in placed)
-        {
-            var w = kv.Key;
-            if (table.TryGetValue(w, out var t))
-            {
-                if (t != '#' || kv.Value != '#') return null;
-                overlap.Add(w);
-                continue;
-            }
-            cells[w] = kv.Value;
-            if (pAngles.TryGetValue(w, out int a)) angles[w] = a;
-            if (pFloors.TryGetValue(w, out int f)) floors[w] = f;
-            if (pUnder.TryGetValue(w, out char u)) under[w] = u;
-            if (pAbove.TryGetValue(w, out var pile)) above[w] = pile;
-        }
         bool door = false;
-        foreach (var w in overlap)
-            foreach (var s in Sides)
-                if (table.TryGetValue(w + s, out var t) && IsFloor(t) && placed.TryGetValue(w - s, out var c) && IsFloor(c))
+        foreach (var pk in placed)
+        {
+            if (!plans.TryGetValue(pk.Key, out var floor)) plans[pk.Key] = floor = new FloorPlan();
+            var table = new Dictionary<Vector2Int, char>(floor.cells);
+            var overlap = new List<Vector2Int>();
+            foreach (var kv in pk.Value.cells)
+            {
+                var w = kv.Key;
+                if (table.TryGetValue(w, out var t))
                 {
-                    cells[w] = '.';
-                    door = true;
+                    if (t != '#' || kv.Value != '#') return null;
+                    overlap.Add(w);
+                    continue;
                 }
-        return door ? ToText(cells, out _, objects, angles, floors, under, above) : null;
+                // columns: nothing goes under or over another floor's cell
+                if (plans.Any(o => o.Key != pk.Key && o.Value.cells.ContainsKey(w) && (pk.Value.solid.Contains(w) || o.Value.solid.Contains(w)))) return null;
+                Put(floor, pk.Value, w);
+            }
+            foreach (var w in overlap)
+                foreach (var s in Sides)
+                    if (table.TryGetValue(w + s, out var t) && IsFloor(t) && pk.Value.cells.TryGetValue(w - s, out var c) && IsFloor(c))
+                    {
+                        floor.cells[w] = '.';
+                        door = true;
+                    }
+        }
+        return door ? WriteFloors(plans, out _) : null;
     }
 
-    // Multiplayer: the level with its only pocket on `cell` (any old one goes back to rail on the table's edge, felt inside).
-    // Allowed on felt (a hole) or on a rail next to felt. Null = not allowed there, or a ball / the rack starts there.
+    // Multiplayer: the level with its only pocket on `cell` of the highest floor there (any old one goes back to rail on
+    // the table's edge, felt inside). Allowed on felt (a hole) or on a rail next to felt. Null = not allowed there, or a ball / the rack starts there.
     public static string MovePocket(string text, Vector2Int cell)
     {
-        var objects = new Dictionary<Vector2Int, char>();
-        var angles = new Dictionary<Vector2Int, int>();
-        var floors = new Dictionary<Vector2Int, int>();
-        var under = new Dictionary<Vector2Int, char>();
-        var above = new Dictionary<Vector2Int, List<(char c, int angle)>>();
-        var cells = ToCells(text, Vector2Int.zero, objects, angles, floors, under, above);
+        var plans = ReadFloors(text);
+        if (TopAt(plans, cell) is not { } p) return null;
+        var cells = p.cells;
         bool Felt(Vector2Int k) => cells.TryGetValue(k, out var c) && IsFloor(c);
-        if (!cells.TryGetValue(cell, out var here) || !(here == '.' || here == 'O' || (here == '#' && Around.Any(d => Felt(cell + d))))) return null;
-        if (UnderObject(objects, cell)) return null;
-        ClearPockets(cells);
+        char here = cells[cell];
+        if (!(here == '.' || here == 'O' || (here == '#' && Around.Any(d => Felt(cell + d))))) return null;
+        if (UnderObject(p.objects, cell)) return null;
+        foreach (var o in plans.Values) ClearPockets(o.cells);
         cells[cell] = 'O';
-        return ToText(cells, out _, objects, angles, floors, under, above);
+        return WriteFloors(plans, out _);
     }
 
     static readonly Vector2Int[] Around = Enumerable.Range(0, 9).Select(i => new Vector2Int(i % 3 - 1, i / 3 - 1)).Where(d => d != Vector2Int.zero).ToArray();
@@ -588,26 +734,20 @@ public static partial class LevelBuilder
     // multiplayer build phase: no pocket while pieces go on (they may cover where it was; the round's winner places it again)
     public static string RemovePocket(string text)
     {
-        var objects = new Dictionary<Vector2Int, char>();
-        var angles = new Dictionary<Vector2Int, int>();
-        var floors = new Dictionary<Vector2Int, int>();
-        var under = new Dictionary<Vector2Int, char>();
-        var above = new Dictionary<Vector2Int, List<(char c, int angle)>>();
-        var cells = ToCells(text, Vector2Int.zero, objects, angles, floors, under, above);
-        ClearPockets(cells);
-        return ToText(cells, out _, objects, angles, floors, under, above);
+        var plans = ReadFloors(text);
+        foreach (var p in plans.Values) ClearPockets(p.cells);
+        return WriteFloors(plans, out _);
     }
 
     // Multiplayer start: only one pocket, the one farthest from the cue's start; none: one on the farthest rail that takes it
     public static string OnePocket(string text)
     {
-        var objects = new Dictionary<Vector2Int, char>();
-        var cells = ToCells(text, Vector2Int.zero, objects);
-        var pockets = cells.Where(kv => kv.Value == 'O').Select(kv => kv.Key).ToList();
+        var plans = ReadFloors(text).Values;
+        var pockets = plans.SelectMany(p => p.cells).Where(kv => kv.Value == 'O').Select(kv => kv.Key).ToList();
         if (pockets.Count == 1) return text;
         // none (the build phase removed it and nobody placed it again): the farthest rail that can take one
-        var cue = objects.Where(o => o.Value == '0').Select(o => (Vector2)o.Key / Sub).DefaultIfEmpty(Vector2.zero).First();
-        if (pockets.Count == 0) pockets = cells.Where(kv => kv.Value == '#').Select(kv => kv.Key).ToList();
+        var cue = plans.SelectMany(p => p.objects).Where(o => o.Value == '0').Select(o => (Vector2)o.Key / Sub).DefaultIfEmpty(Vector2.zero).First();
+        if (pockets.Count == 0) pockets = plans.SelectMany(p => p.cells).Where(kv => kv.Value == '#').Select(kv => kv.Key).ToList();
         return pockets.OrderByDescending(p => (p - cue).sqrMagnitude).Select(p => MovePocket(text, p)).FirstOrDefault(t => t != null) ?? text;
     }
 
@@ -636,9 +776,87 @@ public static partial class LevelBuilder
 
     public static Level Build(string text, string name)
     {
+        var plans = ReadFloors(text);
+        if (plans.Count == 0) plans[0] = new FloorPlan();
+        // every floor on the same grid; the file's bottom-left tile stays the world's (0, 0)
+        Vector2Int min = Vector2Int.zero, max = Vector2Int.zero;
+        foreach (var k in plans.Values.SelectMany(p => p.cells.Keys))
+        {
+            min = Vector2Int.Min(min, k);
+            max = Vector2Int.Max(max, k);
+        }
+        Level main = null;
+        var tracks = PlatformTracks(plans).ToDictionary(kv => (kv.Key.f, kv.Key.c - min), kv => (kv.Value.nodes.Select(n => (n.f, n.c - min)).ToList(), kv.Value.loop));
+        foreach (var kv in plans)
+        {
+            var p = kv.Value;
+            main ??= new Level { root = new GameObject(name).transform, sheets = new(), trackPaths = tracks };
+            var sheet = main.sheets.Count == 0 ? main : new Level();
+            foreach (var k in p.solid) sheet.columns.Add(k - min);
+            BuildSheet(ToText(p.cells, out _, p.objects, p.angles, null, p.under, p.above, (min, max)), kv.Key, sheet, main);
+        }
+        // a cell is a step for the floor right under it (no room to roll under); a column cell is more:
+        // a wall on every floor down to what's under it
+        for (int i = 1; i < main.sheets.Count; i++)
+        {
+            var s = main.sheets[i];
+            for (int x = 0; x < s.ground.GetLength(0); x++)
+                for (int z = 0; z < s.ground.GetLength(1); z++)
+                {
+                    var c = new Vector2Int(x, z);
+                    if (IsVoid(At(s.ground, c))) continue;
+                    bool solid = s.columns.Contains(c);
+                    for (int j = i - 1; j >= 0; j--)
+                    {
+                        var g = main.sheets[j];
+                        bool has = !IsVoid(At(g.ground, c));
+                        if (g.floor == s.floor - 1 || (solid && !has))
+                            g.walls.Add(SquareWall(new Vector3(x, g.BaseY(c), z), s.BaseY(c) - FloorStep * 0.6f)); // a ball rolling off the top doesn't touch it
+                        if (has || !solid) break;
+                    }
+                }
+        }
+        // a platform is on every floor its track reaches (Sheet / GroundAt find it there); track pieces under a tube hide
+        foreach (var s in main.sheets.ToList())
+            foreach (var pl in s.platforms.ToList())
+                for (int i = 1; i < pl.path.Count; i++)
+                {
+                    int f = pl.saw ? s.floor : Mathf.RoundToInt(pl.path[i].y / FloorStep);
+                    var other = main.sheets.Find(x => x.floor == f);
+                    if (other == null) continue;
+                    var c = Level.CellOf(pl.path[i]);
+                    if (IsTrack(At(other.tiles, c)) && other.modules.TryGetValue(c, out var piece) && piece) piece.SetActive(false);
+                    if (!pl.saw && !other.platforms.Contains(pl)) other.platforms.Add(pl);
+                }
+        // index walls by every cell a ball touching them could be centered in
+        foreach (var s in main.sheets)
+            foreach (var wall in s.walls)
+            {
+                var b = wall.bounds;
+                for (int x = Mathf.RoundToInt(b.xMin - Ball.Radius); x <= Mathf.RoundToInt(b.xMax + Ball.Radius); x++)
+                    for (int z = Mathf.RoundToInt(b.yMin - Ball.Radius); z <= Mathf.RoundToInt(b.yMax + Ball.Radius); z++)
+                    {
+                        var key = new Vector2Int(x, z);
+                        if (!s.wallGrid.TryGetValue(key, out var list)) s.wallGrid[key] = list = new List<Wall>();
+                        list.Add(wall);
+                    }
+            }
+        TableBase(main);
+        return main;
+    }
+
+    // one floor: text = its grid and "---" section (no floor lines), on the grid every floor shares
+    static void BuildSheet(string text, int floor, Level lv, Level main)
+    {
         var tiles = Parse(text);
         int w = tiles.GetLength(0), h = tiles.GetLength(1);
-        var lv = new Level { root = new GameObject(name).transform, tiles = tiles, angles = ParseAngles(text), floors = ParseFloors(text) };
+        lv.tiles = tiles;
+        lv.angles = ParseAngles(text);
+        lv.floor = floor;
+        lv.main = main;
+        lv.root = main.root;
+        lv.balls = main.balls;
+        main.sheets.Add(lv);
         var under = ParseUnder(text);
         var above = ParseAbove(text);
         lv.ground = (char[,])tiles.Clone();
@@ -646,11 +864,9 @@ public static partial class LevelBuilder
             for (int x = 0; x < w; x++)
                 if (OnTop(tiles[x, r])) lv.ground[x, r] = under.GetValueOrDefault(new Vector2Int(x, h - 1 - r), '.');
         // a platform's track runs over nothing (a saw's lies on the felt)
-        for (int r = 0; r < h; r++)
-            for (int x = 0; x < w; x++)
-                if (tiles[x, r] == PlatformTile)
-                    foreach (var k in TrackPath(lv, new Vector2Int(x, h - 1 - r), true, out _))
-                        if (At(tiles, k) == Track) lv.ground[k.x, h - 1 - k.y] = ' ';
+        foreach (var t in main.trackPaths.Values)
+            foreach (var (f, k) in t.nodes)
+                if (f == floor && IsTrack(At(tiles, k))) lv.ground[k.x, h - 1 - k.y] = ' ';
         lv.bounds = new Bounds(new Vector3((w - 1) / 2f, 0, (h - 1) / 2f), new Vector3(w, 0, h));
 
         for (int r = 0; r < h; r++)
@@ -659,10 +875,19 @@ public static partial class LevelBuilder
                 var cell = new Vector2Int(x, h - 1 - r);
                 var pos = new Vector3(cell.x, lv.SurfaceY(cell, cell), cell.y);
                 Place(lv, tiles[x, r], pos);
-                char ground = lv.ground[x, r];
-                if (ground != tiles[x, r]) Module(lv, ground, pos); // a bridge under a module (before it: the module's settings win the cell)
-                // a module stands on what's under it: felt, the top of a rail, a bridge's deck
+                // a module stands on what's under it: felt, the top of a rail
                 pos.y = lv.ModuleY(cell);
+                if (tiles[x, r] == PlatformTile && above.TryGetValue(cell, out var ride))
+                {
+                    var plat = Module(lv, PlatformTile, pos);
+                    foreach (var (c, a) in ride.Where(l => RidesPlatform(l.c)))
+                    {
+                        Module(lv, c, pos, a, true).transform.SetParent(plat.transform, true); // rides with it
+                        lv.platforms[^1].riders.Add(c);
+                    }
+                    lv.modules[cell] = plat;
+                    continue;
+                }
                 if (!above.TryGetValue(cell, out var pile) || !Stackable(tiles[x, r]))
                 {
                     Module(lv, tiles[x, r], pos);
@@ -680,33 +905,19 @@ public static partial class LevelBuilder
             }
         foreach (var o in ParseObjects(text))
         {
-            var q = new Vector3(o.Key.x, 0, o.Key.y) / Sub;
-            q.y = lv.GroundAt(q) ?? 0;
+            var q = new Vector3(o.Key.x / (float)Sub, floor * FloorStep, o.Key.y / (float)Sub);
+            q.y = lv.GroundAt(q) ?? q.y;
             Place(lv, o.Value, q);
         }
         BuildTable(lv);
-
-        // index walls by every cell a ball touching them could be centered in
-        foreach (var wall in lv.walls)
-        {
-            var b = wall.bounds;
-            for (int x = Mathf.RoundToInt(b.xMin - Ball.Radius); x <= Mathf.RoundToInt(b.xMax + Ball.Radius); x++)
-                for (int z = Mathf.RoundToInt(b.yMin - Ball.Radius); z <= Mathf.RoundToInt(b.yMax + Ball.Radius); z++)
-                {
-                    var key = new Vector2Int(x, z);
-                    if (!lv.wallGrid.TryGetValue(key, out var list)) lv.wallGrid[key] = list = new List<Wall>();
-                    list.Add(wall);
-                }
-        }
-        TableBase(lv);
-        return lv;
     }
 
     static void TableBase(Level lv)
     {
         float legTop = FloorThickness + 0.6f;
         int w = lv.tiles.GetLength(0), h = lv.tiles.GetLength(1);
-        bool Solid(int x, int z) => !IsVoid(At(lv.ground, new Vector2Int(x, z)));
+        // under the lowest floor; columns stand on it too
+        bool Solid(int x, int z) => lv.sheets.Any(s => (s == lv || s.columns.Contains(new Vector2Int(x, z))) && !IsVoid(At(s.ground, new Vector2Int(x, z))));
         // the apron follows the table's shape: one box per run of tiles in each row
         for (int z = 0; z < h; z++)
             for (int x = 0; x < w; x++)
@@ -779,7 +990,7 @@ public static partial class LevelBuilder
         ["Wood"] = Wood, ["DarkWood"] = DarkWood, ["Cushion"] = CushionColor, ["Felt"] = Felt,
         ["CueTip"] = new(0.15f, 0.3f, 0.7f), ["CueFerrule"] = new(0.95f, 0.93f, 0.85f), ["CueWood"] = new(0.85f, 0.7f, 0.45f),
         ["CueButt"] = new(0.08f, 0.05f, 0.04f), ["CueWrap"] = new(0.15f, 0.15f, 0.17f),
-        ["Block"] = BlockColor, ["BlockTop"] = BlockTopColor, ["SpikeBase"] = SpikeBaseColor, ["Metal"] = MetalColor,
+        ["Block"] = BlockColor, ["BlockTop"] = BlockTopColor, ["SpikeBase"] = SpikeBaseColor, ["TimedSpikes"] = TimedColor, ["TimedSpikesInv"] = TimedInvColor, ["Metal"] = MetalColor,
         ["FanHousing"] = FanColor, ["FanDuct"] = DuctColor, ["FanBlade"] = BladeColor, ["FanHub"] = HubColor, ["BoosterPlate"] = BoosterColor,
         ["PortalBlue"] = PortalBlueColor, ["PortalOrange"] = PortalOrangeColor, ["PortalCore"] = PortalCoreColor, ["Ice"] = IceColor, ["Sand"] = SandColor,
         ["Grate"] = GrateColor, ["ButtonCap"] = ButtonColor, ["Gate"] = GateColor, ["TimedWall"] = TimedColor, ["Bumper"] = BumperColor, ["BumperBase"] = BeltColor,

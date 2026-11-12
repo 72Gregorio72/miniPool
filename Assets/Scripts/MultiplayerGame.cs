@@ -327,7 +327,7 @@ public partial class MultiplayerGame : MonoBehaviour
         {
             float step = 2 * Mathf.Asin(Mathf.Min(1, Ball.Radius * 1.2f / r)) * Mathf.Rad2Deg; // neighbors a bit more than a ball apart
             var q = eight + Quaternion.Euler(0, Rules.MirrorSlot(i, n) * step, 0) * d;
-            if (level.Supports(q) && level.TileAt(q) == '.') return new Vector3(q.x, level.GroundAt(q).Value + Ball.Radius, q.z);
+            if (level.Sheet(q).Supports(q) && level.Sheet(q).TileAt(q) == '.') return new Vector3(q.x, level.Sheet(q).GroundAt(q).Value + Ball.Radius, q.z);
         }
         return Spread(cue, i); // shortcut: this one isn't mirrored, only when the circle leaves the felt
     }
@@ -342,7 +342,7 @@ public partial class MultiplayerGame : MonoBehaviour
             for (int z = -3; z <= 3; z++)
             {
                 var q = p + new Vector3(x * s, 0, z * s);
-                if (level.Supports(q) && level.TileAt(q) == '.') spots.Add(new Vector3(q.x, level.GroundAt(q).Value + Ball.Radius, q.z));
+                if (level.Sheet(q).Supports(q) && level.Sheet(q).TileAt(q) == '.') spots.Add(new Vector3(q.x, level.Sheet(q).GroundAt(q).Value + Ball.Radius, q.z));
             }
         spots.Sort((a, b) => (a - p).sqrMagnitude.CompareTo((b - p).sqrMagnitude));
         return i < spots.Count ? spots[i] : p;

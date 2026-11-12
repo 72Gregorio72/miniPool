@@ -8,12 +8,14 @@ using UnityEngine.InputSystem.UI;
 using UnityEngine.Rendering;
 using UnityEngine.UI;
 
-// Home (Gioca / Skin / Esci), level select (one real 3D pool ball per level, 15 per world, live 3D preview behind),
+// Home and level select drawn on a real table seen from above (GameManager.MenuTable): the home has the rack and the cue ball
+// beside the chosen item, the level select one real ball per level in an S (5 per row) with a live preview over the hovered one;
 // cue-ball skins and the results card. uGUI built in code: no prefabs, no scene setup.
 // The canvas sits in front of the camera (Screen Space - Camera) so the 3D balls, placed between the two, draw over it.
 public partial class GameUI : MonoBehaviour
 {
-    public Action<int> onSelect, onPlay; // level index
+    public Action<int> onPlay; // level index
+    public Func<string, int, LevelBuilder.Level> onTable; // (level text, world) -> the menu table (GameManager.MenuTable)
     public Action onMenu, onHost, onHostPool; // onHostPool: online 8-ball (2 players, turns)
     public Action onCreate; // "Crea livelli": the user's levels (LevelEditor)
     public Action<string> onJoin; // join code
@@ -24,7 +26,7 @@ public partial class GameUI : MonoBehaviour
         CrownGold = new(1f, 0.78f, 0.15f); // crown outline around a level's ball
     const float PlaneDistance = 0.3f, ModelDistance = 0.2f; // canvas and 3D icons, in front of the camera
 
-    enum Page { None, Home, Levels, Skins, TableSkins, Pause, Settings, MyLevels, Editor }
+    enum Page { None, Home, Worlds, Levels, Skins, TableSkins, Pause, Settings, MyLevels, Editor }
     Page screen;
     public bool OnSettings => screen == Page.Settings;
     public int escFrame; // frame in which this UI used Esc, so the game doesn't use it too
@@ -48,10 +50,24 @@ public partial class GameUI : MonoBehaviour
     readonly List<Model> models = new();
     readonly Dictionary<int, Material> dim = new();
 
+    // menu table: world shown (-1 = home), the home's cue ball and items, the level balls
+    LevelBuilder.Level table;
+    int tableWorld;
+    MenuView view; // hand-edited layout of home and level select (Resources/Menu/Menu.prefab, or the instance in the scene)
+    Action[] homeActions;
+    Transform marker;
+    bool markerSnap;
+    int homeSel;
+
     // level select
     int selected, previewed;
-    readonly Dictionary<int, Model> icons = new();
-    Text levelTitle, levelInfo;
+    readonly Dictionary<int, Transform> icons = new(); // existing levels' balls on the table
+    Transform popBall;
+    readonly List<GameObject> spawned = new(); // level balls, line pieces, world cards: gone with Hide
+    readonly List<(int world, MenuWorldCard card)> worldCards = new(); // open worlds only
+    int worldSel;
+    readonly Dictionary<int, Transform> skinBalls = new(); // skin index -> its ball on the vertical table
+    static Material lineMat;
 
     // skins
     int skinShown;
@@ -81,6 +97,10 @@ public partial class GameUI : MonoBehaviour
         hud = Rect(root, Vector2.zero, Vector2.zero);
         if (!FindAnyObjectByType<EventSystem>())
             new GameObject("EventSystem", typeof(EventSystem), typeof(InputSystemUIInputModule)).transform.SetParent(transform);
+        view = FindAnyObjectByType<MenuView>(FindObjectsInactive.Include);
+        if (!view && Resources.Load<MenuView>("Menu/Menu") is { } prefab) view = Instantiate(prefab);
+        if (view) WireMenu();
+        else Debug.LogError("MiniPool: manca Resources/Menu/Menu.prefab (MiniPool > Crea prefab menu)");
     }
 
     public void Hide()
@@ -90,62 +110,120 @@ public partial class GameUI : MonoBehaviour
         foreach (var m in models) if (m.t) Destroy(m.t.gameObject);
         models.Clear();
         pop = null;
-        foreach (var o in previewStuff) if (o) Destroy(o);
-        previewStuff.Clear();
-        previewCams.Clear();
+        popBall = null;
+        marker = null;
+        if (view)
+        {
+            view.home.gameObject.SetActive(false);
+            view.levels.gameObject.SetActive(false);
+            if (view.worlds) view.worlds.gameObject.SetActive(false);
+        }
+        skinBalls.Clear();
+        if (view && view.skins) view.skins.gameObject.SetActive(false);
+        foreach (var o in spawned) if (o) Destroy(o);
+        spawned.Clear();
+        worldCards.Clear();
+        ClearPreviews();
         foreach (Transform c in root) if (c != toasts && c != hud) Destroy(c.gameObject);
     }
 
-    // ---------- single-player HUD (GameManager.Hud, CueController) ----------
+    // ---------- single-player HUD (CueController) ----------
 
-    Text hudTop, hudMessage, hudHelp;
-    RectTransform cuePanel, cueDot, cueFill;
-    Image cueFillImg;
-    Text cueLabel;
+    RectTransform cuePanel, cueBallSlot, cueDot, cueStick;
+    Canvas overlay; // in front of the 3D ball: the tip spot
+    Camera cueCam;
+    RenderTexture cueTex;
+    Model cueModel;
+    int cueSkin = -1;
+    static Sprite powerSprite;
 
-    // level / shots / fouls at the top left, the shot's message under it, the controls at the bottom left; null hides a line
-    public void SetHud(string top, string message, string help)
-    {
-        if (!hudTop)
-        {
-            var tl = Corner(hud, new Vector2(0, 1));
-            hudTop = Label(tl, "", 26, White, new Vector2(24, -36), new Vector2(1800, 40), TextAnchor.MiddleLeft, true, true);
-            hudMessage = Label(tl, "", 26, White, new Vector2(24, -100), new Vector2(1400, 120), TextAnchor.MiddleLeft, false, true);
-            hudHelp = Label(Corner(hud, Vector2.zero), "", 19, new Color(1, 1, 1, 0.75f), new Vector2(24, 44), new Vector2(1700, 60), TextAnchor.MiddleLeft, false, true);
-        }
-        SetText(hudTop, top);
-        SetText(hudMessage, message);
-        SetText(hudHelp, help);
-    }
-
-    static void SetText(Text t, string s)
-    {
-        if (t.text != (s ?? "")) t.text = s ?? "";
-        if (t.gameObject.activeSelf != (s != null)) t.gameObject.SetActive(s != null);
-    }
-
-    // bottom right: the cue ball with the tip spot (tip in ball radii, max 0.5) and elevation, the power bar beside it
+    // bottom right, no text: the equipped cue ball (3D) with the tip spot (tip in ball radii, max 0.5) and the power bar beside it,
+    // green at the top to red at the bottom, covered by a cue that slides down to show it as the power grows
     public void SetCue(bool on, Vector2 tip, float power, float elevation)
     {
-        const float Size = 110;
+        const float Size = 130, BarW = 30, BarH = 150;
         if (!cuePanel)
         {
             cuePanel = Corner(hud, new Vector2(1, 0));
-            var ball = Box(cuePanel, Glass, new Vector2(-90, 120), new Vector2(Size, Size), circle);
-            cueDot = Box(ball, White, Vector2.zero, new Vector2(16, 16), circle);
-            cueLabel = Label(cuePanel, "", 20, White, new Vector2(-120, 40), new Vector2(460, 30), shadow: true);
-            var bar = Box(cuePanel, Glass, new Vector2(-170, 120), new Vector2(20, Size));
-            cueFill = Box(bar, Color.green, Vector2.zero, new Vector2(16, 0));
-            cueFill.anchorMin = cueFill.anchorMax = cueFill.pivot = new Vector2(0.5f, 0);
-            cueFill.anchoredPosition = new Vector2(0, 2);
-            cueFillImg = cueFill.GetComponent<Image>();
+            cueBallSlot = Rect(cuePanel, new Vector2(-110, 120), new Vector2(Size, Size));
+            // the dot on a canvas drawn over everything, at the same layout units as the HUD
+            var go = new GameObject("CueOverlay", typeof(Canvas), typeof(CanvasScaler));
+            go.transform.SetParent(transform);
+            overlay = go.GetComponent<Canvas>();
+            overlay.renderMode = RenderMode.ScreenSpaceOverlay;
+            var scaler = go.GetComponent<CanvasScaler>();
+            scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
+            scaler.referenceResolution = new Vector2(1920, 1080);
+            scaler.matchWidthOrHeight = 0.5f;
+            var ball = Rect(Corner((RectTransform)go.transform, new Vector2(1, 0)), new Vector2(-110, 120), new Vector2(Size, Size));
+            cueDot = Box(ball, Color.black, Vector2.zero, new Vector2(24, 24), circle); // black outline
+            Box(cueDot, White, Vector2.zero, new Vector2(16, 16), circle);
+            var bar = Box(cuePanel, Color.black, new Vector2(-260, 120), new Vector2(BarW + 6, BarH + 6), null); // rectangular black outline
+            var inside = Box(bar, White, Vector2.zero, new Vector2(BarW, BarH), PowerSprite());
+            inside.gameObject.AddComponent<RectMask2D>();
+            // the equipped cue (a copy of CueController's), filmed by its own camera far from the table, shown as long as the bar
+            cueStick = Rect(inside, Vector2.zero, new Vector2(BarW, BarH));
+            var img = cueStick.gameObject.AddComponent<RawImage>();
+            img.raycastTarget = false;
+            img.texture = cueTex = new RenderTexture(64, Mathf.RoundToInt(64 * BarH / BarW), 16) { antiAliasing = 4 };
+            BuildCueShot(BarW / BarH);
+        }
+        if (cueModel == null || !cueModel.t || cueSkin != BallArt.SelectedSkin) // Hide drops the menu models, this one too
+        {
+            if (cueModel != null && cueModel.t) { models.Remove(cueModel); Destroy(cueModel.t.gameObject); }
+            cueSkin = BallArt.SelectedSkin;
+            cueModel = AddModel(cueBallSlot, BallArt.CueMaterial(cueSkin));
         }
         if (cuePanel.gameObject.activeSelf != on) cuePanel.gameObject.SetActive(on);
+        if (overlay.gameObject.activeSelf != on) overlay.gameObject.SetActive(on);
+        if (cueCam) cueCam.enabled = on;
+        if (cueModel.t.gameObject.activeSelf != on) cueModel.t.gameObject.SetActive(on);
         if (!on) return;
         cueDot.anchoredPosition = tip * Size;
-        cueFill.sizeDelta = new Vector2(16, (Size - 4) * power);
-        cueFillImg.color = Color.Lerp(Color.green, Color.red, power);
-        SetText(cueLabel, "Effetto: destro + sinistro   ·   " + (elevation < 0 ? $"Colpo da sotto (salto): {-elevation:0}° (W / S)" : $"Stecca alzata: {elevation:0}° (W / S)"));
+        cueStick.anchoredPosition = new Vector2(0, -BarH * Mathf.Clamp01(power));
+    }
+
+    // the power bar's cue: a copy of the equipped one, upright, made as thick as the bar (aspect = width / height), and an
+    // orthographic camera far below the room that films it into cueTex (transparent background)
+    // shortcut: copied once; when cue skins exist, copy it again when the skin changes
+    void BuildCueShot(float aspect)
+    {
+        var src = FindAnyObjectByType<CueController>(FindObjectsInactive.Include);
+        if (!src || !src.Stick) return;
+        var far = new Vector3(0, -2000, 0);
+        var stick = Instantiate(src.Stick.gameObject, transform);
+        stick.SetActive(true);
+        stick.transform.SetPositionAndRotation(far, Quaternion.identity); // upright, tip at the top
+        stick.transform.localScale = Vector3.one;
+        var b = stick.GetComponentsInChildren<Renderer>().Select(r => r.bounds).Aggregate((x, y) => { x.Encapsulate(y); return x; });
+        float len = b.size.y, thick = Mathf.Max(b.size.x, b.size.z);
+        stick.transform.localScale = new Vector3(len * aspect / thick, 1, len * aspect / thick);
+        foreach (var r in stick.GetComponentsInChildren<Renderer>()) r.shadowCastingMode = ShadowCastingMode.Off;
+        var c = stick.GetComponentsInChildren<Renderer>().Select(r => r.bounds).Aggregate((x, y) => { x.Encapsulate(y); return x; }).center;
+        cueCam = new GameObject("CueCamera").AddComponent<Camera>();
+        cueCam.transform.SetParent(transform);
+        cueCam.transform.SetPositionAndRotation(c - Vector3.forward * 5, Quaternion.identity);
+        cueCam.orthographic = true;
+        cueCam.orthographicSize = len / 2;
+        cueCam.nearClipPlane = 0.1f;
+        cueCam.farClipPlane = 10;
+        cueCam.clearFlags = CameraClearFlags.SolidColor;
+        cueCam.backgroundColor = Color.clear;
+        cueCam.targetTexture = cueTex;
+    }
+
+    // vertical gradient, green at the top to red at the bottom
+    static Sprite PowerSprite()
+    {
+        if (powerSprite) return powerSprite;
+        var tex = new Texture2D(1, 64) { wrapMode = TextureWrapMode.Clamp, filterMode = FilterMode.Bilinear };
+        for (int y = 0; y < 64; y++)
+        {
+            float t = y / 63f; // 0 = bottom
+            tex.SetPixel(0, y, t < 0.5f ? Color.Lerp(new Color(0.9f, 0.15f, 0.1f), new Color(1f, 0.85f, 0.1f), t * 2) : Color.Lerp(new Color(1f, 0.85f, 0.1f), new Color(0.2f, 0.8f, 0.25f), t * 2 - 1));
+        }
+        tex.Apply();
+        return powerSprite = Sprite.Create(tex, new Rect(0, 0, 1, 64), new Vector2(0.5f, 0.5f));
     }
 
     // ---------- onboarding hint ----------
@@ -206,27 +284,92 @@ public partial class GameUI : MonoBehaviour
 
     // ---------- home ----------
 
+    /// <summary>Builds the menu table if it isn't up: world -1 = the home (rack + cue ball), otherwise that world's empty table.</summary>
+    public void ShowTable(int world)
+    {
+        if (table != null && table.root && tableWorld == world) return;
+        var text = Resources.Load<TextAsset>("PoolTable")?.text ?? "";
+        tableWorld = world;
+        table = onTable?.Invoke(world < 0 ? text : text.Split("---")[0], Mathf.Max(0, world));
+    }
+
+    // the prefab's buttons get their actions once; its own camera only shows the layout while editing
+    void WireMenu()
+    {
+        if (view.view) view.view.enabled = false;
+        view.canvas.worldCamera = cam;
+        view.home.gameObject.SetActive(false);
+        view.levels.gameObject.SetActive(false);
+        if (view.worlds) view.worlds.gameObject.SetActive(false);
+        if (view.skins) view.skins.gameObject.SetActive(false);
+        if (view.skinView) view.skinView.enabled = false;
+        if (view.tableSkinButton) view.tableSkinButton.onClick.AddListener(() => { Sfx.Play(Sfx.Kind.Click, 1); ShowTableSkin(GameManager.TableSkin); });
+        if (view.skinBackButton) view.skinBackButton.onClick.AddListener(() => { Sfx.Play(Sfx.Kind.Click, 1); ShowHome(); });
+        homeActions = new Action[] { ShowWorlds, () => ShowMultiplayer(null), () => onCreate?.Invoke(), ShowSkins, () => ShowSettings(ShowHome), Quit };
+        for (int i = 0; i < view.homeItems.Length && i < homeActions.Length; i++)
+        {
+            int k = i;
+            if (!view.homeItems[i]) continue;
+            view.homeItems[i].onClick.AddListener(() => { Sfx.Play(Sfx.Kind.Click, 1); homeActions[k](); });
+            OnEnter(view.homeItems[i], () => HomeSelect(k));
+        }
+        if (view.menuButton) view.menuButton.onClick.AddListener(() => { Sfx.Play(Sfx.Kind.Click, 1); ShowHome(); });
+        if (view.hardButton) view.hardButton.onClick.AddListener(() =>
+        {
+            Sfx.Play(Sfx.Kind.Click, 1);
+            GameManager.HardMode = !GameManager.HardMode;
+            HardText();
+        });
+    }
+
+    void HardText()
+    {
+        var t = view.hardButton ? view.hardButton.GetComponentInChildren<Text>() : null;
+        if (t) t.text = GameManager.HardMode ? "Hard mode: sì" : "Hard mode: no";
+    }
+
+    /// <summary>Puts the camera where the menu prefab's camera is (position, rotation, field of view).</summary>
+    public void PlaceMenuCamera(Camera c)
+    {
+        var from = !view ? null : screen == Page.Skins && view.skinView ? view.skinView : view.view;
+        if (!from) return;
+        c.transform.SetPositionAndRotation(from.transform.position, from.transform.rotation);
+        c.fieldOfView = from.fieldOfView;
+    }
+
     public void ShowHome()
     {
         Hide();
         screen = Page.Home;
-        if (previewed == 0 && levels.Count > 0) { previewed = levels[0]; onSelect?.Invoke(previewed); }
-        var full = Rect(root, Vector2.zero, Vector2.zero);
-        Shade(full, new Vector2(0, 1), 420, true);
-        Shade(full, new Vector2(0, 0), 420, false);
-
-        var left = Corner(full, new Vector2(0, 0.5f));
-        Label(left, "MINIPOOL", 150, White, new Vector2(140, 230), new Vector2(1000, 180), TextAnchor.MiddleLeft, true, true);
-        Label(left, "Biliardo, minigolf e niente falli", 34, Worlds.ThemeOf(0).accent, new Vector2(146, 130), new Vector2(1000, 50), TextAnchor.MiddleLeft, true, true);
-
-        const float bx = 140 + 210;
-        var items = new (string, Action)[]
+        if (previewed == 0 && levels.Count > 0) previewed = levels[0];
+        ShowTable(-1);
+        if (!view) return;
+        var cue = table?.balls.FirstOrDefault(b => b && b.number == 0);
+        if (cue)
         {
-            ("Gioca", () => ShowLevels(previewed)), ("Multiplayer", () => ShowMultiplayer(null)), ("Crea livelli", () => onCreate?.Invoke()),
-            ("Skin", ShowSkins), ("Impostazioni", () => ShowSettings(ShowHome)), ("Esci", Quit),
-        };
-        for (int i = 0; i < items.Length; i++)
-            Btn(left, items[i].Item1, i == 0 ? Worlds.ThemeOf(0).accent : Glass, i == 0 ? Ink : White, new Vector2(bx, 30 - i * 100), new Vector2(420, 82), items[i].Item2, round);
+            marker = cue.transform;
+            markerSnap = true;
+            foreach (var r in cue.GetComponentsInChildren<Renderer>()) r.sharedMaterial = BallArt.CueMaterial(BallArt.SelectedSkin);
+        }
+        view.home.gameObject.SetActive(true);
+        HomeSelect(Mathf.Clamp(homeSel, 0, homeActions.Length - 1));
+    }
+
+    Text ItemLabel(int i) => i < view.homeItems.Length && view.homeItems[i] ? view.homeItems[i].GetComponentInChildren<Text>() : null;
+
+    void HomeSelect(int i)
+    {
+        homeSel = i;
+        for (int k = 0; k < view.homeItems.Length; k++)
+            if (ItemLabel(k) is { } t) t.color = k == i ? view.itemSelected : view.itemColor;
+    }
+
+    static void OnEnter(Component c, Action a)
+    {
+        var trigger = c.gameObject.AddComponent<EventTrigger>();
+        var enter = new EventTrigger.Entry { eventID = EventTriggerType.PointerEnter };
+        enter.callback.AddListener(_ => a());
+        trigger.triggers.Add(enter);
     }
 
     // ---------- pause / settings ----------
@@ -324,6 +467,78 @@ public partial class GameUI : MonoBehaviour
 
     // ---------- level select ----------
 
+    // levels open in order (Rules.Unlocked): locked balls stay dark, locked worlds can't be opened
+    bool Open(int lv) => Rules.Unlocked(levels, lv, GameManager.Completed);
+
+    bool WorldOpen(int w) => levels.Any(l => Worlds.WorldOf(l) == w && Open(l));
+
+    // ---------- world select ----------
+
+    // one card per world (the prefab's template cloned next to it), colored with the world's table; then its levels
+    void ShowWorlds()
+    {
+        if (levels.Count == 0 || !view || !view.worlds || !view.worldCard) { ShowLevels(previewed); return; }
+        Hide();
+        screen = Page.Worlds;
+        ShowTable(0);
+        view.worlds.gameObject.SetActive(true);
+        view.worldCard.gameObject.SetActive(false);
+        for (int w = 0; w <= Worlds.WorldOf(levels.Max()); w++)
+        {
+            int k = w;
+            var theme = Worlds.ThemeOf(w);
+            var mine = levels.Where(l => Worlds.WorldOf(l) == w).ToList();
+            bool open = WorldOpen(w);
+            var c = Instantiate(view.worldCard, view.worldCard.transform.parent);
+            c.gameObject.SetActive(true);
+            spawned.Add(c.gameObject);
+            if (c.frame) c.frame.color = theme.wood;
+            if (c.felt) c.felt.color = theme.felt;
+            if (c.number) c.number.text = (w + 1).ToString();
+            if (c.title) c.title.text = theme.name.ToUpperInvariant();
+            int done = mine.Count(GameManager.Completed), crowns = mine.Count(GameManager.Crown);
+            if (c.progress) c.progress.text = !open ? "BLOCCATO" : $"{done} / {mine.Count}" + (crowns > 0 ? $"   ·   {crowns} {(crowns == 1 ? "corona" : "corone")}" : "");
+            if (c.highlight) c.highlight.enabled = false;
+            if (c.preview && mine.Count > 0)
+            {
+                LevelBuilder.SetTheme(theme); // the preview in its own world's colors (materials are cached by color)
+                c.preview.texture = PiecePreview(Resources.Load<TextAsset>($"Levels/level{mine[0]:00}").text, w, theme.sky);
+            }
+            if (c.dot)
+            {
+                // one dot per level: done, crowned, still to do
+                c.dot.gameObject.SetActive(false);
+                foreach (int l in mine)
+                {
+                    var d = Instantiate(c.dot, c.dot.transform.parent);
+                    d.gameObject.SetActive(true);
+                    d.color = GameManager.Crown(l) ? c.dotCrown : GameManager.Completed(l) ? c.dotDone : c.dotTodo;
+                }
+            }
+            if (!open)
+            {
+                c.gameObject.AddComponent<CanvasGroup>().alpha = c.lockedAlpha;
+                if (c.button) c.button.interactable = false;
+                continue;
+            }
+            worldCards.Add((w, c));
+            if (c.button) c.button.onClick.AddListener(() => { Sfx.Play(Sfx.Kind.Click, 1); OpenWorld(k); });
+            OnEnter(c, () => worldSel = k);
+        }
+        LevelBuilder.SetTheme(Worlds.ThemeOf(0)); // back to the table's
+        int last = Worlds.WorldOf(previewed > 0 ? previewed : levels[0]);
+        worldSel = worldCards.Any(c => c.world == last) ? last : worldCards.Count > 0 ? worldCards[^1].world : 0;
+    }
+
+    // the world's levels, starting on the last level played there if it's open, otherwise its last open level
+    void OpenWorld(int w)
+    {
+        int lv = Worlds.WorldOf(previewed) == w && Open(previewed) ? previewed : levels.LastOrDefault(l => Worlds.WorldOf(l) == w && Open(l));
+        if (lv > 0) ShowLevels(lv);
+    }
+
+    // ---------- level select ----------
+
     public void ShowLevels(int select)
     {
         if (levels.Count == 0)
@@ -332,71 +547,75 @@ public partial class GameUI : MonoBehaviour
             Label(Rect(root, Vector2.zero, Vector2.zero), "Nessun livello in Resources/Levels", 40, White, Vector2.zero, new Vector2(1400, 80));
             return;
         }
-        if (!levels.Contains(select)) select = levels[0];
+        if (!levels.Contains(select) || !Open(select)) select = levels.Last(Open);
         selected = 0;
         BuildWorld(Worlds.WorldOf(select));
         Select(select);
     }
 
+    // the world's table with its balls on the prefab's slots (an S by default), a line joining them in order
     void BuildWorld(int world)
     {
         Hide();
         screen = Page.Levels;
         var theme = Worlds.ThemeOf(world);
-        var full = Rect(root, Vector2.zero, Vector2.zero);
-
-        // soft dark gradient at top and bottom so text reads over any table
-        Shade(full, new Vector2(0, 1), 300, true);
-        Shade(full, new Vector2(0, 0), 420, false);
-
-        var top = Corner(full, new Vector2(0, 1));
-        Label(top, "M I N I P O O L", 26, new Color(1, 1, 1, 0.7f), new Vector2(90, -70), new Vector2(600, 40), TextAnchor.MiddleLeft, true, true);
-        Label(top, $"Mondo {world + 1}", 76, White, new Vector2(90, -135), new Vector2(600, 90), TextAnchor.MiddleLeft, true, true);
-        Label(top, theme.name, 36, theme.accent, new Vector2(90, -195), new Vector2(600, 50), TextAnchor.MiddleLeft, true, true);
-        Btn(Corner(full, new Vector2(1, 1)), "Menu", Glass, White, new Vector2(-170, -80), new Vector2(200, 70), ShowHome, round);
-        static string HardText() => GameManager.HardMode ? "Hard mode: sì" : "Hard mode: no";
-        Button hard = null;
-        hard = Btn(Corner(full, new Vector2(1, 1)), HardText(), Glass, White, new Vector2(-440, -80), new Vector2(300, 70), () =>
-        {
-            GameManager.HardMode = !GameManager.HardMode;
-            hard.GetComponentInChildren<Text>().text = HardText();
-        }, round);
-
-        var bottom = Corner(full, new Vector2(0.5f, 0));
-        levelTitle = Label(bottom, "", 48, White, new Vector2(0, 300), new Vector2(1000, 64), bold: true, shadow: true);
-        levelInfo = Label(bottom, "", 28, White, new Vector2(0, 252), new Vector2(1000, 40), shadow: true);
-
-        const float step = 100;
-        var bar = Box(bottom, new Color(0, 0, 0, 0.35f), new Vector2(0, 130), new Vector2(step * Worlds.LevelsPerWorld + 50, 140));
-        for (int b = 1; b <= Worlds.LevelsPerWorld; b++)
-        {
-            int lv = Worlds.Level(world, b);
-            bool exists = levels.Contains(lv);
-            var slot = Rect(bar, new Vector2((b - (Worlds.LevelsPerWorld + 1) / 2f) * step, 4), Vector2.one * (exists ? 84 : 64));
-            var model = AddModel(slot, exists ? BallArt.Material(b) : Dim(b));
-            if (!exists) continue;
-            icons[lv] = model;
-            var hit = slot.gameObject.AddComponent<Image>();
-            hit.color = Color.clear; // invisible hit target under the 3D ball
-            var btn = slot.gameObject.AddComponent<Button>();
-            btn.transition = Selectable.Transition.None;
-            btn.onClick.AddListener(() => { Sfx.Play(Sfx.Kind.Click, 1); onPlay?.Invoke(lv); });
-            var trigger = slot.gameObject.AddComponent<EventTrigger>();
-            var enter = new EventTrigger.Entry { eventID = EventTriggerType.PointerEnter };
-            enter.callback.AddListener(_ => Select(lv));
-            trigger.triggers.Add(enter);
-            int best = GameManager.Best(lv);
-            if (best > 0) Label(bar, best == 1 ? "1 tiro" : $"{best} tiri", 20, theme.accent, slot.anchoredPosition + new Vector2(0, -58), new Vector2(96, 26), bold: true, shadow: true);
-            else if (GameManager.Completed(lv)) Box(bar, theme.accent, slot.anchoredPosition + new Vector2(0, -56), new Vector2(12, 12), circle); // won before records existed
-            if (GameManager.Crown(lv)) CrownOutline(slot);
-        }
-
+        ShowTable(world);
+        if (!view) return;
+        view.levels.gameObject.SetActive(true);
+        if (view.popup) view.popup.gameObject.SetActive(false);
+        if (view.worldCaption) view.worldCaption.text = string.Format(view.captionFormat, world + 1);
+        if (view.worldTitle) view.worldTitle.text = theme.name.ToUpperInvariant();
+        HardText();
         int maxWorld = Worlds.WorldOf(levels.Max());
-        float edge = (step * Worlds.LevelsPerWorld + 50) / 2 + 70;
-        if (world > 0) ArrowButton(bottom, "‹", new Vector2(-edge, 130), () => { BuildWorld(world - 1); Select(levels.First(l => Worlds.WorldOf(l) == world - 1)); });
-        if (world < maxWorld) ArrowButton(bottom, "›", new Vector2(edge, 130), () => { BuildWorld(world + 1); Select(levels.First(l => Worlds.WorldOf(l) == world + 1)); });
+        void Arrow(Button b, bool on, int w)
+        {
+            if (!b) return;
+            b.gameObject.SetActive(on);
+            b.onClick.RemoveAllListeners();
+            b.onClick.AddListener(() => { Sfx.Play(Sfx.Kind.Click, 1); OpenWorld(w); });
+        }
+        Arrow(view.prevWorld, world > 0, world - 1);
+        Arrow(view.nextWorld, world < maxWorld && WorldOpen(world + 1), world + 1);
+        if (table == null) return;
 
-        Label(bottom, "Clic su una palla per giocare   ·   ← → scegli   ·   Invio gioca   ·   Esc menu", 22, new Color(1, 1, 1, 0.6f), new Vector2(0, 32), new Vector2(1400, 36), shadow: true);
+        if (!lineMat) lineMat = new Material(Shader.Find("Universal Render Pipeline/Unlit"));
+        lineMat.color = Color.Lerp(theme.felt, view.lineColor, view.lineMix);
+        Vector3 prev = default;
+        for (int b = 1; b <= Worlds.LevelsPerWorld && b <= view.levelSlots.Length; b++)
+        {
+            if (!view.levelSlots[b - 1]) continue;
+            var pos = view.levelSlots[b - 1].position;
+            pos.y = Ball.Radius * view.ballScale;
+            int lv = Worlds.Level(world, b);
+            var ball = LevelBuilder.SpawnBall(b, pos, table.root).transform;
+            spawned.Add(ball.gameObject);
+            ball.localScale = Vector3.one * view.ballScale;
+            ball.rotation = Facing(ball, Vector3.up, Vector3.forward); // number up, readable from the camera
+            if (b > 1 && view.joinLine) Segment(prev, pos, lineMat);
+            prev = pos;
+            if (!levels.Contains(lv) || !Open(lv)) // missing or still locked: dark, not selectable
+            {
+                foreach (var r in ball.GetComponentsInChildren<Renderer>()) r.sharedMaterial = Dim(b);
+                continue;
+            }
+            icons[lv] = ball;
+            if (GameManager.Crown(lv)) CrownHull(ball);
+        }
+    }
+
+    // flat strip on the felt between two balls
+    void Segment(Vector3 a, Vector3 b, Material mat)
+    {
+        a.y = b.y = 0.004f;
+        var go = GameObject.CreatePrimitive(PrimitiveType.Cube);
+        spawned.Add(go);
+        Destroy(go.GetComponent<Collider>());
+        go.transform.SetParent(table.root, false);
+        go.transform.SetPositionAndRotation((a + b) / 2, Quaternion.LookRotation(b - a));
+        go.transform.localScale = new Vector3(view.lineWidth, 0.008f, (b - a).magnitude);
+        var r = go.GetComponent<Renderer>();
+        r.sharedMaterial = mat;
+        r.shadowCastingMode = ShadowCastingMode.Off;
     }
 
     void ArrowButton(Transform parent, string s, Vector2 pos, Action click)
@@ -405,50 +624,59 @@ public partial class GameUI : MonoBehaviour
         b.GetComponentInChildren<Text>().fontSize = 56;
     }
 
+    // the selected level gets the popup: the prefab's card above its ball with the level turning live, its name and record
     void Select(int lv)
     {
-        if (lv == selected) return;
+        if (lv == selected || !icons.TryGetValue(lv, out var ball)) return;
         selected = previewed = lv;
-        levelTitle.text = $"Livello {Worlds.BallOf(lv)}";
+        ClearPreviews();
+        if (!view.popup) return;
+        view.popup.gameObject.SetActive(true);
+        if (view.popupPreview) view.popupPreview.texture = PiecePreview(Resources.Load<TextAsset>($"Levels/level{lv:00}").text, 0);
+        if (view.popupName) view.popupName.text = string.Format(view.nameFormat, Worlds.BallOf(lv));
         int best = GameManager.Best(lv), par = GameManager.Par(lv);
         var info = best > 0 ? $"Record: {best} {(best == 1 ? "tiro" : "tiri")}" : GameManager.Completed(lv) ? "Completato" : "Da completare";
-        if (par > 0) info += GameManager.Crown(lv) ? "   ·   Corona!" : $"   ·   Corona in {par} {(par == 1 ? "tiro" : "tiri")}";
-        levelInfo.text = info;
-        foreach (var (l, m) in icons) m.spin = l == lv;
-        onSelect?.Invoke(lv);
+        if (par > 0) info += GameManager.Crown(lv) ? "  ·  Corona!" : $"  ·  Corona in {par}";
+        if (view.popupInfo) view.popupInfo.text = info;
+        pop = view.popup;
+        popT = 0;
+        popBall = ball;
+        LateUpdate();
     }
 
     // ---------- skins ----------
 
     void ShowSkins() => ShowSkin(BallArt.SelectedSkin);
 
+    // the table turned upright (the prefab's skin camera), one cue ball per skin in rows and columns on it:
+    // locked ones dark, the one in use with a gold ring; hover shows the name, a click on an open one uses it
     void ShowSkin(int s)
     {
         Hide();
         screen = Page.Skins;
+        ShowTable(0);
+        if (!view || !view.skins || table == null) return;
+        view.skins.gameObject.SetActive(true);
+        int n = BallArt.Skins.Length;
+        for (int i = 0; i < n; i++)
+        {
+            var ball = LevelBuilder.SpawnBall(0, view.SkinSpot(i, n, table.bounds.center), table.root).transform;
+            spawned.Add(ball.gameObject);
+            ball.localScale = Vector3.one * view.skinBallScale;
+            var mat = BallArt.Unlocked(i) ? BallArt.CueMaterial(i) : Dim(-1 - i, BallArt.CueMaterial(i));
+            foreach (var r in ball.GetComponentsInChildren<Renderer>()) r.sharedMaterial = mat;
+            if (i == BallArt.SelectedSkin) CrownHull(ball);
+            skinBalls[i] = ball;
+        }
+        SkinInfo(s);
+    }
+
+    void SkinInfo(int s)
+    {
         skinShown = s;
-        var full = Rect(root, Vector2.zero, Vector2.zero);
-        Box(full, new Color(0, 0, 0, 0.35f), Vector2.zero, Vector2.zero, null);
-
-        var top = Corner(full, new Vector2(0, 1));
-        Label(top, "M I N I P O O L", 26, new Color(1, 1, 1, 0.7f), new Vector2(90, -70), new Vector2(600, 40), TextAnchor.MiddleLeft, true, true);
-        Label(top, "Skin della bianca", 76, White, new Vector2(90, -135), new Vector2(1000, 90), TextAnchor.MiddleLeft, true, true);
-
-        var center = Corner(full, new Vector2(0.5f, 0.5f));
-        bool open = BallArt.Unlocked(s);
-        AddModel(Rect(center, new Vector2(0, 60), Vector2.one * 380), open ? BallArt.CueMaterial(s) : Dim(-1 - s, BallArt.CueMaterial(s))).spin = true;
-        if (!open) Label(center, "Bloccata: " + BallArt.Requirement(s), 28, Worlds.ThemeOf(0).accent, new Vector2(0, -298), new Vector2(1000, 36), shadow: true);
-        ArrowButton(center, "‹", new Vector2(-380, 60), () => ShowSkin((s + BallArt.Skins.Length - 1) % BallArt.Skins.Length));
-        ArrowButton(center, "›", new Vector2(380, 60), () => ShowSkin((s + 1) % BallArt.Skins.Length));
-        Label(center, BallArt.Skins[s].name, 56, White, new Vector2(0, -200), new Vector2(800, 70), bold: true, shadow: true);
-        for (int i = 0; i < BallArt.Skins.Length; i++)
-            Box(center, i == s ? White : new Color(1, 1, 1, 0.3f), new Vector2((i - (BallArt.Skins.Length - 1) / 2f) * 30, -255), Vector2.one * 14, circle);
-
-        bool inUse = BallArt.SelectedSkin == s;
-        Btn(center, "Indietro", Glass, White, new Vector2(-150, -360), new Vector2(260, 80), ShowHome, round);
-        Btn(center, inUse ? "In uso" : open ? "Usa questa" : "Bloccata", inUse || !open ? Soft : Worlds.ThemeOf(0).accent, Ink, new Vector2(150, -360), new Vector2(260, 80),
-            () => { if (open) BallArt.SelectedSkin = s; ShowSkin(s); }, round);
-        Btn(Corner(full, new Vector2(1, 1)), "Skin tavolo", Glass, White, new Vector2(-200, -80), new Vector2(280, 70), () => ShowTableSkin(GameManager.TableSkin), round);
+        if (view.skinName) view.skinName.text = BallArt.Skins[s].name.ToUpperInvariant();
+        if (view.skinState)
+            view.skinState.text = BallArt.SelectedSkin == s ? "IN USO" : BallArt.Unlocked(s) ? "CLIC PER USARLA" : "BLOCCATA: " + BallArt.Requirement(s);
     }
 
     // online table colors: one world theme per skin, drawn as a flat table (wood frame, cushions, felt, diamonds)
@@ -487,8 +715,6 @@ public partial class GameUI : MonoBehaviour
     }
 
     // ---------- multiplayer ----------
-
-    public void ForgetPreview() => previewed = 0;
 
     // create or join; status = progress or error line
     public void ShowMultiplayer(string status)
@@ -597,11 +823,18 @@ public partial class GameUI : MonoBehaviour
         }
     }
 
+    void ClearPreviews()
+    {
+        foreach (var o in previewStuff) if (o) Destroy(o);
+        previewStuff.Clear();
+        previewCams.Clear();
+    }
+
     // piece previews: built 300 units apart far from the table; cameras circle them in Update, everything goes away in Hide
     readonly List<(Camera cam, Bounds b)> previewCams = new();
     readonly List<UnityEngine.Object> previewStuff = new();
 
-    Texture PiecePreview(string text, int i)
+    Texture PiecePreview(string text, int i, Color? background = null)
     {
         var lv = LevelBuilder.Build(text, "PiecePreview");
         var offset = new Vector3(2000 + i * 300, 0, 2000);
@@ -613,7 +846,7 @@ public partial class GameUI : MonoBehaviour
         c.targetTexture = rt;
         c.fieldOfView = 35;
         c.clearFlags = CameraClearFlags.SolidColor;
-        c.backgroundColor = new Color(0.12f, 0.13f, 0.16f);
+        c.backgroundColor = background ?? new Color(0.12f, 0.13f, 0.16f);
         c.farClipPlane = 200;
         previewCams.Add((c, b));
         previewStuff.Add(lv.root.gameObject);
@@ -755,11 +988,14 @@ public partial class GameUI : MonoBehaviour
             var rot = Quaternion.Euler(50, Time.unscaledTime * 25 + i * 47, 0);
             c.transform.SetPositionAndRotation(b.center - rot * Vector3.forward * (Mathf.Max(b.size.x, b.size.z) * 1.6f + 3), rot);
         }
-        foreach (var (lv, m) in icons)
+        foreach (var (w, c) in worldCards)
         {
-            float s = Mathf.Lerp(m.slot.localScale.x, lv == selected ? 1.3f : 1f, 1 - Mathf.Exp(-14 * dt));
-            m.slot.localScale = Vector3.one * s;
+            float s = Mathf.Lerp(c.transform.localScale.x, w == worldSel ? view.cardHoverScale : 1f, 1 - Mathf.Exp(-14 * dt));
+            c.transform.localScale = Vector3.one * s;
+            if (c.highlight && c.highlight.enabled != (w == worldSel)) c.highlight.enabled = w == worldSel;
         }
+        foreach (var (lv, t) in icons) Grow(t, lv == selected, view.ballScale);
+        foreach (var (k, t) in skinBalls) Grow(t, k == skinShown, view.skinBallScale);
         if (pop)
         {
             popT = Mathf.Min(1, popT + dt * 3.5f);
@@ -777,22 +1013,49 @@ public partial class GameUI : MonoBehaviour
         if (kb == null) return;
         int move = (kb.rightArrowKey.wasPressedThisFrame ? 1 : 0) - (kb.leftArrowKey.wasPressedThisFrame ? 1 : 0);
         bool enter = kb.enterKey.wasPressedThisFrame || kb.numpadEnterKey.wasPressedThisFrame, esc = kb.escapeKey.wasPressedThisFrame;
-        if (screen == Page.Levels)
+        if (screen == Page.Home)
         {
+            int dy = (kb.downArrowKey.wasPressedThisFrame ? 1 : 0) - (kb.upArrowKey.wasPressedThisFrame ? 1 : 0);
+            if (dy != 0) HomeSelect((homeSel + dy + homeActions.Length) % homeActions.Length);
+            else if (enter) { Sfx.Play(Sfx.Kind.Click, 1); homeActions[homeSel](); }
+        }
+        else if (screen == Page.Levels)
+        {
+            int hover = Hovered(icons);
+            if (hover > 0)
+            {
+                Select(hover);
+                if (Mouse.current.leftButton.wasPressedThisFrame) { Sfx.Play(Sfx.Kind.Click, 1); onPlay?.Invoke(hover); return; }
+            }
             int i = levels.IndexOf(selected);
-            if (move != 0 && i + move >= 0 && i + move < levels.Count)
+            if (move != 0 && i + move >= 0 && i + move < levels.Count && Open(levels[i + move]))
             {
                 int lv = levels[i + move];
                 if (Worlds.WorldOf(lv) != Worlds.WorldOf(selected)) { BuildWorld(Worlds.WorldOf(lv)); selected = 0; }
                 Select(lv);
             }
             if (enter) onPlay?.Invoke(selected);
+            else if (esc) ShowWorlds();
+        }
+        else if (screen == Page.Worlds)
+        {
+            int k = worldCards.FindIndex(c => c.world == worldSel);
+            if (move != 0 && k + move >= 0 && k + move < worldCards.Count) worldSel = worldCards[k + move].world;
+            if (enter && k >= 0) OpenWorld(worldSel);
             else if (esc) ShowHome();
         }
         else if (screen == Page.Skins)
         {
-            if (move != 0) ShowSkin((skinShown + move + BallArt.Skins.Length) % BallArt.Skins.Length);
-            else if (enter && BallArt.Unlocked(skinShown)) { BallArt.SelectedSkin = skinShown; ShowSkin(skinShown); }
+            int hover = Hovered(skinBalls), n = BallArt.Skins.Length;
+            if (hover >= 0 && hover != skinShown) SkinInfo(hover);
+            bool click = hover >= 0 && Mouse.current.leftButton.wasPressedThisFrame;
+            if (move != 0) SkinInfo((skinShown + move + n) % n);
+            else if ((enter || click) && BallArt.Unlocked(skinShown) && BallArt.SelectedSkin != skinShown)
+            {
+                Sfx.Play(Sfx.Kind.Click, 1);
+                BallArt.SelectedSkin = skinShown;
+                ShowSkin(skinShown); // the gold ring moves
+            }
             else if (esc) ShowHome();
         }
         else if (screen == Page.TableSkins)
@@ -810,6 +1073,30 @@ public partial class GameUI : MonoBehaviour
         }
     }
 
+    // the chosen ball eases to hoverScale × its size, the others back; it stays on the felt
+    void Grow(Transform t, bool chosen, float size)
+    {
+        if (!t) return;
+        float s = Mathf.Lerp(t.localScale.x, (chosen ? view.hoverScale : 1f) * size, 1 - Mathf.Exp(-14 * Time.unscaledDeltaTime));
+        t.localScale = Vector3.one * s;
+        t.position = new Vector3(t.position.x, Ball.Radius * s, t.position.z);
+    }
+
+    // the key of the ball under the mouse (screen distance to its center, a bit more than its radius), -1 for none
+    int Hovered(Dictionary<int, Transform> balls)
+    {
+        var mouse = Mouse.current;
+        if (mouse == null || EventSystem.current && EventSystem.current.IsPointerOverGameObject()) return -1;
+        Vector2 m = mouse.position.ReadValue();
+        foreach (var (key, t) in balls)
+        {
+            if (!t) continue;
+            Vector2 c = cam.WorldToScreenPoint(t.position), edge = cam.WorldToScreenPoint(t.position + cam.transform.up * Ball.Radius * t.localScale.x);
+            if ((m - c).magnitude < (edge - c).magnitude * 1.3f) return key;
+        }
+        return -1;
+    }
+
     // after the camera moved: keep each 3D ball on its UI slot, at the slot's size, number toward the camera
     void LateUpdate()
     {
@@ -822,21 +1109,69 @@ public partial class GameUI : MonoBehaviour
             m.t.localScale = Vector3.one * (m.slot.rect.height * m.slot.lossyScale.y * k);
             m.t.localRotation = (m.spin ? Quaternion.AngleAxis(Time.unscaledTime * 70, Vector3.up) : Quaternion.identity) * m.face;
         }
+        if (pop && popBall && pop.parent is RectTransform layer)
+        {
+            // card above the ball, or under it when it doesn't fit above; kept inside the screen (card anchored and pivoted on its center)
+            var r = Vector3.forward * Ball.Radius * popBall.localScale.x;
+            RectTransformUtility.ScreenPointToLocalPointInRectangle(layer, cam.WorldToScreenPoint(popBall.position + r), cam, out var top);
+            RectTransformUtility.ScreenPointToLocalPointInRectangle(layer, cam.WorldToScreenPoint(popBall.position - r), cam, out var bottom);
+            var half = pop.sizeDelta / 2;
+            var lim = layer.rect.size / 2 - half - Vector2.one * 20;
+            bool above = top.y + half.y + view.popupGap <= lim.y;
+            float y = above ? top.y + half.y + view.popupGap : bottom.y - half.y - view.popupGap;
+            pop.anchoredPosition = new Vector2(Mathf.Clamp(top.x, -lim.x, lim.x), Mathf.Clamp(y, -lim.y, lim.y));
+            if (pop.Find("Pointer") is RectTransform pointer) // toward the ball: bottom edge when above, top edge when under
+            {
+                pointer.anchorMin = pointer.anchorMax = new Vector2(0.5f, above ? 0 : 1);
+                pointer.anchoredPosition = Vector2.zero;
+            }
+        }
+        if (marker && view && ItemLabel(homeSel) is { } item)
+        {
+            // the home's cue ball rolls on the felt to the left of the chosen item's text
+            var label = item.rectTransform;
+            var ray = cam.ScreenPointToRay(RectTransformUtility.WorldToScreenPoint(cam, label.TransformPoint(new Vector3(label.rect.xMin - view.markerGap, label.rect.center.y, 0))));
+            if (new Plane(Vector3.up, new Vector3(0, Ball.Radius, 0)).Raycast(ray, out float d))
+            {
+                var target = ray.GetPoint(d);
+                var next = markerSnap ? target : Vector3.Lerp(marker.position, target, 1 - Mathf.Exp(-16 * Time.unscaledDeltaTime));
+                var move = next - marker.position;
+                if (move.sqrMagnitude > 1e-8f) marker.rotation = Quaternion.AngleAxis(move.magnitude / Ball.Radius * Mathf.Rad2Deg, Vector3.Cross(Vector3.up, move)) * marker.rotation;
+                marker.position = next;
+                markerSnap = false;
+            }
+        }
     }
 
     // ---------- building blocks ----------
 
     static Material outlineMat;
 
-    // crown: flat gold outline around a ball's slot (inverted hull: a bigger copy showing only its back faces, unlit, no glow)
-    void CrownOutline(RectTransform ballSlot)
+    static Material CrownMat()
     {
         if (!outlineMat)
         {
             outlineMat = new Material(Shader.Find("Universal Render Pipeline/Unlit")) { color = CrownGold };
             outlineMat.SetFloat("_Cull", (float)CullMode.Front);
         }
-        AddModel(Rect(ballSlot, Vector2.zero, Vector2.one * ballSlot.rect.height * 1.12f), outlineMat); // child: grows with the ball
+        return outlineMat;
+    }
+
+    // crown on a ball on the table: the same inverted hull, as a child of the ball
+    static void CrownHull(Transform ball)
+    {
+        var go = LevelBuilder.Visual("Crown", PrimitiveType.Sphere, Vector3.zero, Vector3.one * Ball.Radius * 2 * 1.12f, Quaternion.identity, Color.white, ball, "Ball");
+        foreach (var r in go.GetComponentsInChildren<Renderer>())
+        {
+            r.sharedMaterial = CrownMat();
+            r.shadowCastingMode = ShadowCastingMode.Off;
+        }
+    }
+
+    // crown: flat gold outline around a ball's slot (inverted hull: a bigger copy showing only its back faces, unlit, no glow)
+    void CrownOutline(RectTransform ballSlot)
+    {
+        AddModel(Rect(ballSlot, Vector2.zero, Vector2.one * ballSlot.rect.height * 1.12f), CrownMat()); // child: grows with the ball
     }
 
     Model AddModel(RectTransform slot, Material mat)
@@ -848,15 +1183,15 @@ public partial class GameUI : MonoBehaviour
             r.shadowCastingMode = ShadowCastingMode.Off;
             r.receiveShadows = false;
         }
-        var m = new Model { slot = slot, t = go.transform, face = Facing(go.transform) };
+        var m = new Model { slot = slot, t = go.transform, face = Facing(go.transform, Vector3.back, Vector3.up) };
         m.t.SetParent(cam.transform, false);
         models.Add(m);
         LateUpdate();
         return m;
     }
 
-    // rotation (in camera space) that turns the ball's first number disc (texture u = 0.25, v = 0.5) toward the camera, upright
-    static Quaternion Facing(Transform holder)
+    // rotation that turns the ball's first number disc (texture u = 0.25, v = 0.5) toward `toward`, its top toward `upDir`
+    static Quaternion Facing(Transform holder, Vector3 toward, Vector3 upDir)
     {
         var mf = holder.GetComponentInChildren<MeshFilter>();
         var mesh = mf ? mf.sharedMesh : null;
@@ -873,7 +1208,7 @@ public partial class GameUI : MonoBehaviour
         }
         var n = At(new Vector2(0.25f, 0.5f));
         var up = At(new Vector2(0.25f, 0.62f)) - n;
-        return Quaternion.LookRotation(Vector3.back, Vector3.up) * Quaternion.Inverse(Quaternion.LookRotation(n, up));
+        return Quaternion.LookRotation(toward, upDir) * Quaternion.Inverse(Quaternion.LookRotation(n, up));
     }
 
     // darkened ball for levels that don't exist yet
@@ -915,34 +1250,13 @@ public partial class GameUI : MonoBehaviour
 
     RectTransform Box(Transform parent, Color c, Vector2 pos, Vector2 size) => Box(parent, c, pos, size, round);
 
-    // vertical black fade from an edge of the screen, for text contrast over the 3D view
-    void Shade(Transform parent, Vector2 edge, float height, bool fromTop)
-    {
-        var tex = new Texture2D(1, 64) { wrapMode = TextureWrapMode.Clamp };
-        for (int y = 0; y < 64; y++)
-        {
-            float t = y / 63f;
-            tex.SetPixel(0, y, new Color(0, 0, 0, 0.55f * (fromTop ? t * t : (1 - t) * (1 - t))));
-        }
-        tex.Apply();
-        var rt = Rect(parent, Vector2.zero, Vector2.one);
-        rt.anchorMin = new Vector2(0, edge.y);
-        rt.anchorMax = new Vector2(1, edge.y);
-        rt.pivot = new Vector2(0.5f, edge.y);
-        rt.sizeDelta = new Vector2(0, height);
-        rt.anchoredPosition = Vector2.zero;
-        var img = rt.gameObject.AddComponent<RawImage>();
-        img.texture = tex;
-        img.raycastTarget = false;
-    }
-
-    Text Label(Transform parent, string s, int size, Color c, Vector2 pos, Vector2 box, TextAnchor align = TextAnchor.MiddleCenter, bool bold = false, bool shadow = false)
+    Text Label(Transform parent, string s, int size, Color c, Vector2 pos, Vector2 box, TextAnchor align = TextAnchor.MiddleCenter, bool bold = false, bool shadow = false, Font f = null)
     {
         var rt = Rect(parent, pos, box);
         if (align == TextAnchor.MiddleLeft) rt.pivot = new Vector2(0, 0.5f); // pos = left edge
         rt.anchoredPosition = pos;
         var t = rt.gameObject.AddComponent<Text>();
-        t.font = font;
+        t.font = f ? f : font;
         t.text = s;
         t.fontSize = size;
         t.color = c;

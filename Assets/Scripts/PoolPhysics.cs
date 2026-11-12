@@ -71,7 +71,7 @@ public static class PoolPhysics
         // ray against each wall polygon grown by the ball radius: offset edges + circles at the corners
         var o = new Vector2(from.x, from.z);
         var d = new Vector2(dir.x, dir.z);
-        foreach (var w in lv.walls)
+        foreach (var w in lv.Sheet(from).walls)
             for (int i = 0; i < w.pts.Length; i++)
             {
                 Vector2 a = w.pts[i], e = w.pts[(i + 1) % w.pts.Length] - a;
@@ -160,7 +160,7 @@ public static class PoolPhysics
             b.carried = b.onBelt && (b.transform.position - start[i]).magnitude > 0.3f * b.beltSpeed * time;
             // in a fan's air but already against a rail / ball that way: not pushed, so it stops (else the shot would never end)
             var p = b.transform.position;
-            var air = lv.WindAt(p).normalized;
+            var air = lv.Sheet(p).WindAt(p).normalized;
             b.windBlocked = air != Vector3.zero && Cast(lv, p - air * 0.05f, air, b).distance < 0.08f;
             if (!b.gameObject.activeSelf || b.w == Vector3.zero) continue;
             b.transform.rotation = Quaternion.AngleAxis(b.w.magnitude * Mathf.Rad2Deg * time, b.w.normalized) * b.transform.rotation;
@@ -175,30 +175,42 @@ public static class PoolPhysics
     {
         bool pressed = false;
         foreach (var b in lv.balls)
-            pressed |= b.gameObject.activeSelf && !b.falling && !b.airborne && Has(lv.ModulesAt(b.transform.position), 'K', out _);
-        foreach (var m in lv.movers)
+            pressed |= b.gameObject.activeSelf && !b.falling && !b.airborne && Has(lv.Sheet(b.transform.position).ModulesAt(b.transform.position), 'K', out _);
+        float time = lv.main.time;
+        foreach (var sheet in lv.main.sheets) // a button opens the gates of every floor
         {
-            bool up = m.timed ? (lv.time % (2 * m.period) < m.period) != m.inverted : !pressed;
-            m.rose = up && !m.up;
-            m.up = up;
-        }
-        LevelBuilder.Restack(lv); // piles ride the walls they stand on
-        foreach (var m in lv.movers)
-            m.wall.height = m.up ? m.floor + LevelBuilder.BlockHeight : float.NegativeInfinity;
-        foreach (var pl in lv.platforms)
-        {
-            int n = pl.path.Count, segs = pl.loop ? n : n - 1;
-            if (segs == 0) continue;
-            float s = lv.time * pl.speed, u = pl.loop ? s % segs : Mathf.PingPong(s, segs);
-            int i = Mathf.Min((int)u, segs - 1), sign = pl.loop || s % (2 * segs) < segs ? 1 : -1;
-            Vector3 a = pl.path[i], b = pl.path[(i + 1) % n];
-            pl.center = Vector3.Lerp(a, b, u - i);
-            pl.velocity = (b - a) * (pl.speed * sign);
+            foreach (var m in sheet.movers)
+            {
+                bool up = m.timed ? TimedUp(time, m.period, m.inverted) : !pressed;
+                m.rose = up && !m.up;
+                m.up = up;
+            }
+            LevelBuilder.Restack(sheet); // piles ride the walls they stand on
+            foreach (var m in sheet.movers)
+                m.wall.height = m.up ? m.floor + LevelBuilder.BlockHeight : float.NegativeInfinity;
+            foreach (var pl in sheet.platforms)
+            {
+                int n = pl.path.Count, segs = pl.loop ? n : n - 1;
+                if (segs == 0) continue;
+                float s = time * pl.speed, u = pl.loop ? s % segs : Mathf.PingPong(s, segs);
+                int i = Mathf.Min((int)u, segs - 1), sign = pl.loop || s % (2 * segs) < segs ? 1 : -1;
+                Vector3 a = pl.path[i], b = pl.path[(i + 1) % n];
+                pl.center = Vector3.Lerp(a, b, u - i);
+                pl.velocity = (b - a) * (pl.speed * sign);
+            }
         }
     }
 
+    /// <summary>Timed walls and spikes: up for `period` seconds, then down as long; inverted = the opposite.</summary>
+    public static bool TimedUp(float time, float period, bool inverted) => (time % (2 * period) < period) != inverted;
+
     // moves the visuals of the moving parts (walls slide instead of popping)
-    public static void ShowMoving(LevelBuilder.Level lv, float dt)
+    public static void ShowMoving(LevelBuilder.Level main, float dt)
+    {
+        foreach (var lv in main.main.sheets) ShowSheet(lv, dt);
+    }
+
+    static void ShowSheet(LevelBuilder.Level lv, float dt)
     {
         foreach (var m in lv.movers)
         {
@@ -213,6 +225,14 @@ public static class PoolPhysics
             var p = m.visual.position;
             float target = m.floor + (m.up ? 0 : 0.03f - LevelBuilder.BlockHeight); // visual pivot on the felt
             m.visual.position = new Vector3(p.x, Mathf.MoveTowards(p.y, target, 6 * dt), p.z);
+        }
+        foreach (var ts in lv.timedSpikes)
+        {
+            if (!ts || !ts.tips) continue;
+            bool up = TimedUp(lv.main.time, ts.period, ts.inverted);
+            if (up != ts.shownUp) { ts.shownUp = up; Sfx.Play(Sfx.Kind.Gate, 0.25f); }
+            var s = ts.tips.localScale;
+            ts.tips.localScale = new Vector3(s.x, Mathf.MoveTowards(s.y, up ? 1 : LevelBuilder.SpikesDown, 8 * dt), s.z);
         }
         foreach (var pl in lv.platforms)
         {
@@ -236,12 +256,15 @@ public static class PoolPhysics
         lv.time += dt;
         UpdateMoving(lv);
         var balls = lv.balls;
-        foreach (var m in lv.movers)
-            if (m.rose) Lift(lv, m);
+        foreach (var sheet in lv.sheets)
+            foreach (var m in sheet.movers)
+                if (m.rose) Lift(sheet, m);
+        var top = lv; // the whole level; inside the loops lv = the floor the ball is on
         foreach (var b in balls)
         {
             if (!b.gameObject.activeSelf || predict && Resting(b)) continue;
             var p = b.transform.position;
+            lv = top.Sheet(p);
             b.onBelt = false;
             if (!b.falling && !b.airborne)
             {
@@ -275,6 +298,7 @@ public static class PoolPhysics
 
             if (b.airborne && b.v.y < 0)
             {
+                lv = top.Sheet(p); // coming down, it lands on the first floor under it
                 var ground = lv.GroundAt(p);
                 if (ground != null && p.y - R <= ground.Value)
                 {
@@ -328,6 +352,7 @@ public static class PoolPhysics
             // shortcut: walls are vertical up to their height, no tops (but gates and timed walls, GroundAt);
             // a ball coming down on a rail or block slides off it
             var ap = a.transform.position;
+            lv = top.Sheet(ap);
             float bottom = ap.y - R;
             bool rising = a.airborne && a.v.y > 0;
             foreach (var wall in lv.WallsNear(ap))
@@ -352,7 +377,7 @@ public static class PoolPhysics
     public const int WindReach = 3;                         // wind fan: tiles of air ahead
     // a gate / timed wall rising under a ball throws it up a bit higher than its top: it lands on it
     static readonly float LiftSpeed = Mathf.Sqrt(2 * G * (LevelBuilder.BlockHeight + 0.25f));
-    public const float MagnetRadius = 2.5f, MagnetPull = 20f; // magnet: reach (units) and pull next to it (fades to 0 at the edge)
+    public const float MagnetRadius = 2.5f, MagnetPull = 20f, MagnetMinSpeed = 0.3f; // magnet: reach, pull, speed below which it lets go
     // ramp: rolling ball (5/7 of g) on a slope of FloorStep per tile; horizontal part of the acceleration
     static readonly float RampAccel = G * 5 / 7 * LevelBuilder.FloorStep / (1 + LevelBuilder.FloorStep * LevelBuilder.FloorStep);
 
@@ -363,7 +388,7 @@ public static class PoolPhysics
         foreach (var b in lv.balls)
         {
             var p = b.transform.position;
-            if (!b.gameObject.activeSelf || b.falling || b.airborne || LevelBuilder.Level.CellOf(p) != m.cell || p.y - R < m.floor - 0.1f) continue; // on it or on its pile
+            if (!b.gameObject.activeSelf || b.falling || b.airborne || LevelBuilder.Level.CellOf(p) != m.cell || p.y - R < m.floor - 0.1f || lv.Sheet(p) != lv) continue; // on it or on its pile
             b.airborne = true;
             b.v.y = LiftSpeed;
         }
@@ -375,8 +400,10 @@ public static class PoolPhysics
     {
         if (b.cell is not Vector2Int from) return 0;
         var c = LevelBuilder.Level.CellOf(p);
-        if (c == from || lv.TileAt(new Vector3(from.x, 0, from.y)) != LevelBuilder.Ramp) return 0;
-        float angle = lv.AngleAt(from);
+        if (c == from) return 0;
+        var was = lv.Sheet(new Vector3(from.x, p.y, from.y)); // the floor of the cell it left (a ramp's top is one floor up)
+        if (was.TileAt(new Vector3(from.x, 0, from.y)) != LevelBuilder.Ramp) return 0;
+        float angle = was.AngleAt(from);
         var d = LevelBuilder.AngleDir(angle);
         float along = Vector3.Dot(new Vector3(b.v.x, 0, b.v.z), d);
         if (along < RampJumpSpeed || Vector2.Dot(c - from, new Vector2(d.x, d.z)) < 0.5f) return 0;
@@ -402,18 +429,18 @@ public static class PoolPhysics
                 Kill(lv, b, ref p, LevelBuilder.Level.CellOf(saw.center), predict);
                 return;
             }
+        var felt = lv.ModulesAt(p); // a module on a bridge's deck or up a pile: nothing for a ball below it; on a platform: its riders
+        var c = LevelBuilder.Level.CellOf(p);
         var plat = lv.PlatformAt(p);
+        if (Has(felt, 'X', out _) || SpikesUp(lv, felt, c))
+        {
+            Kill(lv, b, ref p, plat != null ? LevelBuilder.Level.CellOf(plat.path[0]) : c, predict);
+            return;
+        }
         if (plat != null)
         {
             p += plat.velocity * dt; // rides along
             b.cell = LevelBuilder.Level.CellOf(p);
-            return;
-        }
-        var felt = lv.ModulesAt(p); // a module on a bridge's deck or up a pile: nothing for a ball below it
-        var c = LevelBuilder.Level.CellOf(p);
-        if (Has(felt, 'X', out _))
-        {
-            Kill(lv, b, ref p, c, predict);
             return;
         }
         if (!b.windBlocked) b.v += lv.WindAt(p) * dt;
@@ -428,17 +455,17 @@ public static class PoolPhysics
         foreach (var m in lv.magnets)
         {
             var d = new Vector3(m.cell.x - p.x, 0, m.cell.y - p.z);
-            float dist = d.magnitude;
-            if (dist > m.radius || dist < 1e-4f) continue;
-            if (dist < 0.12f && b.v.magnitude < 1.5f) // close and slow: it snaps on and stays
+            float dist = d.magnitude, speed = b.v.magnitude;
+            if (dist > m.radius || dist < 1e-4f || speed < MagnetMinSpeed) continue;
+            if (dist < 0.12f && speed < 1.5f) // close and slow: it snaps on and stays
             {
                 p = new Vector3(m.cell.x, p.y, m.cell.y);
                 b.v = b.w = Vector3.zero;
                 if (!predict) { Sfx.Play(Sfx.Kind.Magnet, 0.8f); Juice.Punch(lv, m.cell, new Vector3(1.15f, 0.85f, 1.15f)); } // once: snapped on, it sits at dist 0 and is skipped above
                 continue;
             }
-            // stronger the closer it gets; at least 12 so a still ball gets going (Cloth stops anything under 0.01 per step)
-            b.v += d / dist * (Mathf.Max(m.pull * (1 - dist / m.radius), 12f) * dt);
+            // pull proportional to the ball's speed; below MagnetMinSpeed it stops pulling so a slow ball settles and the turn ends
+            b.v += d / dist * (m.pull * (1 - dist / m.radius) * (speed / 2f) * dt);
             if (dist < 0.6f) b.v *= 1 - 4 * dt;                              // damped near it, so the ball settles
         }
 
@@ -477,15 +504,28 @@ public static class PoolPhysics
         }
         else if (blue || orange)
         {
-            var to = blue ? lv.portalOrange : lv.portalBlue;
-            if (to.HasValue) p = Teleport(lv, b, p, c, to.Value);
+            LevelBuilder.Level dst = null; // the other portal may be on another floor
+            foreach (var s in lv.main.sheets)
+                if ((blue ? s.portalOrange : s.portalBlue).HasValue) dst = s;
+            var to = dst == null ? null : blue ? dst.portalOrange : dst.portalBlue;
+            if (to.HasValue) p = Teleport(lv, b, p, c, to.Value, dst);
             if (to.HasValue && !predict)
             {
                 Sfx.Play(Sfx.Kind.Portal, 0.8f);
                 Juice.Punch(lv, c, Vector3.one * 1.15f);
-                Juice.Punch(lv, to.Value, Vector3.one * 1.15f);
+                Juice.Punch(dst, to.Value, Vector3.one * 1.15f);
             }
         }
+    }
+
+    // timed spikes on the ball's cell that are up now
+    static bool SpikesUp(LevelBuilder.Level lv, List<(char c, float angle)> felt, Vector2Int c)
+    {
+        bool purple = Has(felt, LevelBuilder.TimedSpikes, out _), green = Has(felt, LevelBuilder.TimedSpikesInv, out _);
+        if (!purple && !green) return false;
+        var set = lv.ModuleAt<TimedSpikesModule>(c);
+        float period = set ? set.period : TimedPeriod;
+        return purple && TimedUp(lv.main.time, period, false) || green && TimedUp(lv.main.time, period, true);
     }
 
     // dies (spikes, saw): drops below the counting line, scored as off the table
@@ -515,14 +555,17 @@ public static class PoolPhysics
 
     // Through a portal: position, velocity and spin are turned by the angle between the two portals, so a ball that
     // enters off-center and at a slant leaves the other one off-center and at the same slant relative to its facing.
-    public static Vector3 Teleport(LevelBuilder.Level lv, Ball b, Vector3 p, Vector2Int from, Vector2Int to)
+    // lv = the floor of the portal on `from`, dst = the floor of the one on `to` (null = the same)
+    public static Vector3 Teleport(LevelBuilder.Level lv, Ball b, Vector3 p, Vector2Int from, Vector2Int to, LevelBuilder.Level dst = null)
     {
-        char Portal(Vector2Int k) => lv.portalBlue == k ? LevelBuilder.PortalBlue : LevelBuilder.PortalOrange;
-        LevelBuilder.Layer lFrom = lv.LayerOf(from, Portal(from)), lTo = lv.LayerOf(to, Portal(to)); // portals on a pile
-        var turn = Quaternion.Euler(0, (lTo?.angle ?? lv.AngleAt(to)) - (lFrom?.angle ?? lv.AngleAt(from)), 0);
+        dst ??= lv;
+        bool blue = lv.portalBlue == from;
+        LevelBuilder.Layer lFrom = lv.LayerOf(from, blue ? LevelBuilder.PortalBlue : LevelBuilder.PortalOrange),
+            lTo = dst.LayerOf(to, blue ? LevelBuilder.PortalOrange : LevelBuilder.PortalBlue); // portals on a pile
+        var turn = Quaternion.Euler(0, (lTo?.angle ?? dst.AngleAt(to)) - (lFrom?.angle ?? lv.AngleAt(from)), 0);
         var off = turn * new Vector3(p.x - from.x, 0, p.z - from.y);
         var q = new Vector3(to.x + Mathf.Clamp(off.x, -0.45f, 0.45f), 100, to.y + Mathf.Clamp(off.z, -0.45f, 0.45f)); // from above: a portal on a deck sends onto it
-        q.y = (lTo?.y ?? lv.GroundAt(q) ?? lv.BaseY(to)) + R;
+        q.y = (lTo?.y ?? dst.GroundAt(q) ?? dst.BaseY(to)) + R;
         b.v = turn * b.v;
         b.w = turn * b.w;
         b.cell = to; // arriving doesn't count as entering: no ping-pong between the portals

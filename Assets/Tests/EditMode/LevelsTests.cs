@@ -17,7 +17,7 @@ public class LevelsTests
                 Assert.IsTrue(lv.balls.Any(b => b.number == 0), $"{t.name}: manca la bianca");
                 int goal = Worlds.BallOf(int.Parse(t.name.Substring(5)));
                 Assert.IsTrue(lv.balls.Any(b => b.number == goal), $"{t.name}: manca la palla {goal}");
-                Assert.IsNotEmpty(lv.pockets, $"{t.name}: manca la buca");
+                Assert.IsTrue(lv.sheets.Any(s => s.pockets.Count > 0), $"{t.name}: manca la buca");
             }
             finally { Object.DestroyImmediate(lv.root.gameObject); }
         }

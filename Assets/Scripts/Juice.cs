@@ -36,7 +36,7 @@ public static class Juice
         var v = new Vector2(b.v.x, b.v.z);
         if (v.sqrMagnitude < 0.01f) return 0;
         float best = 0;
-        foreach (var pk in lv.pockets)
+        foreach (var pk in lv.Sheet(b.transform.position).pockets)
         {
             var to = pk.center - p;
             float d = to.magnitude;

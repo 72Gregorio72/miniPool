@@ -23,7 +23,6 @@ public class GameManager : MonoBehaviour
     List<int> levels; // indices of the levelNN files in Resources/Levels, sorted
     Ball cue;
     State state;
-    string message;
     float shotTime;
 
     // shots, attempts and fouls of the current level (Rules.Run: a restart clears shots and gives the fouls back)
@@ -89,6 +88,7 @@ public class GameManager : MonoBehaviour
     void Start()
     {
         AudioListener.volume = Volume;
+        gameFov = Camera.main.fieldOfView;
         int test = 0;
 #if UNITY_EDITOR
         test = UnityEditor.SessionState.GetInt(TestLevelKey, 0);
@@ -100,7 +100,7 @@ public class GameManager : MonoBehaviour
         cueCtl.ui = ui;
         ui.onPlay = StartLevel;
         ui.onMenu = ShowMenu;
-        ui.onSelect = Preview;
+        ui.onTable = MenuTable;
         mp = gameObject.AddComponent<MultiplayerGame>();
         mp.ui = ui;
         mp.game = this;
@@ -122,9 +122,8 @@ public class GameManager : MonoBehaviour
     void ShowMenu()
     {
         if (customText != null) { ExitCustom(); return; }
-        message = null;
         SetState(State.Menu);
-        ui.ShowLevels(levelIndex); // selecting a ball calls Preview
+        ui.ShowLevels(levelIndex);
     }
 
     // MultiplayerGame takes the table and the camera for the match
@@ -132,45 +131,31 @@ public class GameManager : MonoBehaviour
     {
         if (level != null) Destroy(level.root.gameObject);
         level = null;
-        message = null;
         SetState(State.Multiplayer);
     }
 
     public void ExitMultiplayer(string error = null)
     {
         SetState(State.Menu);
-        ui.ForgetPreview(); // the preview table was replaced by the match
         if (error != null) { ui.ShowHome(); ui.ShowMultiplayer(error); }
         else ui.ShowHome();
     }
 
-    // menu: the selected level is built for show (no simulation) and the camera circles it
-    void Preview(int index)
+    /// <summary>Menu background: a table built for show (no simulation), seen from the menu camera.</summary>
+    public LevelBuilder.Level MenuTable(string text, int world)
     {
-        var text = Resources.Load<TextAsset>($"Levels/level{index:00}");
-        if (!text) return;
         if (level != null) Destroy(level.root.gameObject);
-        ApplyTheme(index);
-        level = LevelBuilder.Build(text.text, text.name);
-        LevelBuilder.Room(level);
+        ApplyWorld(world);
+        level = LevelBuilder.Build(text, "MenuTable");
+        LevelBuilder.Room(level); // the world's room around the table (home: world 1's)
+        MenuCamera();
+        return level;
     }
 
-    float previewYaw = 60;
+    // every frame in the menu: the pose of the menu prefab's camera (MenuView), edited by hand
+    void MenuCamera() => ui.PlaceMenuCamera(Camera.main);
 
-    void PreviewCamera()
-    {
-        if (level == null) return;
-        float dt = Time.deltaTime;
-        previewYaw += 5 * dt;
-        var b = level.bounds;
-        float dist = Mathf.Max(b.size.x, b.size.z) * 1.1f + 6;
-        var rot = Quaternion.Euler(35, previewYaw, 0);
-        // aim a bit below the center so the table sits above the ball bar
-        var pos = b.center + Vector3.down * dist * 0.12f - rot * Vector3.forward * dist;
-        var cam = Camera.main.transform;
-        float k = 1 - Mathf.Exp(-2.5f * dt);
-        cam.SetPositionAndRotation(Vector3.Lerp(cam.position, pos, k), Quaternion.Slerp(cam.rotation, rot, k));
-    }
+    float gameFov = 60; // the scene camera's, used everywhere but the menu
 
     public static void ApplyTheme(int index) => ApplyWorld(Worlds.WorldOf(index));
 
@@ -214,7 +199,7 @@ public class GameManager : MonoBehaviour
         cue = level.balls.FirstOrDefault(b => b.number == 0);
         if (!cue)
         {
-            message = $"{name}: manca la palla bianca (0)";
+            ui.Toast($"{name}: manca la palla bianca (0)");
             SetState(State.GameOver);
             return;
         }
@@ -228,7 +213,6 @@ public class GameManager : MonoBehaviour
         startSpot.Clear();
         foreach (var b in level.balls)
             if (b.number == 0 || b.number == Goal) startSpot[b.number] = b.transform.position;
-        message = null;
         SetupCamera();
         SetState(State.Aiming);
     }
@@ -247,7 +231,6 @@ public class GameManager : MonoBehaviour
         var back = customBack;
         customText = customName = null;
         customBack = null;
-        message = null;
         if (level != null) Destroy(level.root.gameObject);
         level = null;
         SetState(State.Menu);
@@ -259,15 +242,14 @@ public class GameManager : MonoBehaviour
     {
         if (level != null) Destroy(level.root.gameObject);
         level = null;
-        message = null;
         SetState(State.Editor);
     }
 
-    /// <summary>Back to the menu with a level turning behind it.</summary>
+    /// <summary>Back to the menu with the home table behind it.</summary>
     public void BackToMenu()
     {
         SetState(State.Menu);
-        Preview(levelIndex > 0 ? levelIndex : levels.FirstOrDefault());
+        ui.ShowTable(-1);
     }
 
     void SetupCamera()
@@ -285,6 +267,7 @@ public class GameManager : MonoBehaviour
     void SetState(State s)
     {
         state = s;
+        if (s != State.Menu) Camera.main.fieldOfView = gameFov; // the menu camera may use another one
         if (!paused) Time.timeScale = 1; // slow motion ends with the shot
         cueCtl.enabled = s == State.Aiming;
         // the camera grabs the mouse (cursor lock), so it is off while a screen with buttons is up
@@ -319,9 +302,8 @@ public class GameManager : MonoBehaviour
     void Update()
     {
         ui.SetHint(state == State.Aiming && !paused && !(cueCtl.orbit && cueCtl.orbit.Free) ? Hint() : null);
-        Hud();
         if (state is State.Multiplayer or State.Editor) return; // MultiplayerGame / LevelEditor drive
-        if (state == State.Menu) { PreviewCamera(); return; }
+        if (state == State.Menu) { MenuCamera(); return; }
         var kb = Keyboard.current;
         // Esc with the right button held cancels the shot (CueController); otherwise it opens/closes the pause menu
         bool esc = kb != null && kb.escapeKey.wasPressedThisFrame && ui.escFrame != Time.frameCount;
@@ -369,15 +351,13 @@ public class GameManager : MonoBehaviour
 
     void EndShot()
     {
-        var end = run.EndShot(firstHit, potted, lost, Goal, out string msg);
+        var end = run.EndShot(firstHit, potted, lost, Goal, out _);
         if (end == Rules.Run.End.Restart)
         {
             Sfx.Play(Sfx.Kind.Fail, 1);
             Load(levelIndex);
-            message = msg;
             return;
         }
-        message = msg;
         if (end == Rules.Run.End.Forgiven) // the run goes on from here; without the cue or the level ball it couldn't
         {
             Sfx.Play(Sfx.Kind.Fail, 1);
@@ -446,15 +426,4 @@ public class GameManager : MonoBehaviour
         7 => "[W] / [S] alzano e abbassano la stecca: dall'alto la bianca gira",
         _ => null,
     };
-
-    // level, shots, fouls and the shot's message on the uGUI HUD (GameUI.SetHud, only redrawn when the text changes); hidden off the table
-    void Hud()
-    {
-        if (state is State.Menu or State.Multiplayer or State.Editor || paused) { ui.SetHud(null, null, null); return; }
-        bool custom = customText != null;
-        ui.SetHud($"{(custom ? customName : $"Livello {levelIndex}")}   Tiri {run.shots}{(par > 0 ? $" (corona: {par})" : "")}{(run.fouls > 0 ? $"   Falli {run.foulsLeft}/{run.fouls}" : "")}   Obiettivo: manda in buca la {Goal} (non perdere la bianca o la {Goal}, colpisci sempre una palla)",
-            message,
-            "Sinistro + mouse = gira intorno / mira (Shift = fine, frecce = ritocco, Ctrl = solo camera)   Rotella = zoom   T = vista dall'alto   F = volo libero (WASD, Q/E, Shift)\n" +
-            "Destro tenuto + mouse indietro = potenza (+ sinistro = sposta l'effetto), rilascia = tiro, Esc = annulla / pausa   R = restart   M = " + (custom ? "esci" : "menu"));
-    }
 }

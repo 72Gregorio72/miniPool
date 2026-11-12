@@ -16,6 +16,17 @@ public class RulesTests
         Assert.IsFalse(Rules.Crown(1, 0), "no par set");
     }
 
+    [Test] public void Unlocked_OnlyAfterThePreviousIsDone()
+    {
+        var order = new[] { 1, 2, 3, 16 };
+        System.Func<int, bool> done = l => l == 1 || l == 3;
+        Assert.IsTrue(Rules.Unlocked(order, 1, done), "first always open");
+        Assert.IsTrue(Rules.Unlocked(order, 2, done), "1 done");
+        Assert.IsFalse(Rules.Unlocked(order, 3, done), "2 not done, even if 3 itself was");
+        Assert.IsTrue(Rules.Unlocked(order, 16, done), "next world's first follows the previous world's last");
+        Assert.IsFalse(Rules.Unlocked(order, 99, done), "missing level");
+    }
+
     [Test] public void ParLine_ReadAndIgnoredByObjects()
     {
         const string text = "#0#\n---\n8 3 0\ntiri 4\n";

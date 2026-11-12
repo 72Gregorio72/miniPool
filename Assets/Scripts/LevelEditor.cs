@@ -36,7 +36,12 @@ public class LevelEditor : MonoBehaviour
     public int category;
     public char brush = '.';
     public int angle = 90, floor;
+    public int tilt; // track piece: 1 = up, -1 = down (W / S), 0 = flat along its angle
+
+    // what gets painted: the track brush tilted up / down is a vertical piece
+    char PaintBrush => brush == LevelBuilder.Track && tilt != 0 ? (tilt > 0 ? LevelBuilder.TrackUp : LevelBuilder.TrackDown) : brush;
     public bool stack;
+    public bool column; // "Colonna piena": what gets painted is full down to what's under it (LevelDraft.column)
     char buildBrush = '.'; // the Build tab's brush, back when you return to it
 
     readonly List<(string text, Vector2Int min)> undo = new(), redo = new();
@@ -51,7 +56,8 @@ public class LevelEditor : MonoBehaviour
     // mouse on the table
     Vector2Int cell, sub;
     Vector2Int? rectStart;
-    bool hit, erase, stroke, strokeSaved;
+    bool hit, erase, stroke, strokeSaved, shiftPick; // shiftPick: Shift + click on an object picks it (if the mouse doesn't drag)
+    Ray mouseRay;
     (Vector2Int, Vector2Int) lastPaint;
     string hoverKey, pendingKey; // pendingKey: the hover not yet shown, waiting HoverDelay since it last changed
     float pendingAt;
@@ -70,8 +76,30 @@ public class LevelEditor : MonoBehaviour
 
     // ---------- list of the user's levels ----------
 
-    /// <summary>"Crea livelli": the user's levels (new, edit, play, export, delete, import).</summary>
-    public void ShowList() => ui.ShowMyLevels(Names(), () => Open(null), Open, PlayFromList, Duplicate, ExportFile, Delete, Import, OpenFolder, ui.ShowHome);
+    /// <summary>"Crea livelli": the user's levels (new, edit, play, copy, export, delete, paste, import).</summary>
+    public void ShowList() => ui.ShowMyLevels(Names(), () => Open(null), Open, PlayFromList, CopyFromList, Duplicate, ExportFile, Delete, PasteFromList, Import, OpenFolder, ui.ShowHome);
+
+    void CopyFromList(string name)
+    {
+        var text = Read(name);
+        if (text == null) return;
+        GUIUtility.systemCopyBuffer = text;
+        ui.Toast($"\"{name}\" copiato negli appunti");
+    }
+
+    void PasteFromList()
+    {
+        var text = GUIUtility.systemCopyBuffer;
+        if (string.IsNullOrWhiteSpace(text) || LevelBuilder.ToCells(text, Vector2Int.zero).Count == 0) { ui.Toast("Negli appunti non c'è un livello"); return; }
+        var draft = new LevelDraft();
+        draft.SetText(text, Vector2Int.zero);
+        draft.SetGoal(Goal);
+        var name = Unique("Livello incollato");
+        Directory.CreateDirectory(Dir);
+        File.WriteAllText(PathOf(name), draft.GetText(out _));
+        ui.Toast($"Incollato: {name}");
+        ShowList();
+    }
 
     void Duplicate(string name)
     {
@@ -221,7 +249,7 @@ public class LevelEditor : MonoBehaviour
     /// <summary>Playtest: the level as it is now (saved or not), back here when leaving it.</summary>
     public void Playtest()
     {
-        if (!d.cells.Values.Concat(d.objects.Values).Contains('0')) { ui.Toast("Metti la bianca prima di provare il livello"); return; }
+        if (!d.All.Contains('0')) { ui.Toast("Metti la bianca prima di provare il livello"); return; }
         End();
         game.PlayCustom(d.GetText(out _), editName, () => { game.EnterEditor(); Begin(); });
     }
@@ -260,13 +288,13 @@ public class LevelEditor : MonoBehaviour
     public void Rotate(int degrees)
     {
         if (TurningClip) d.RotateClip(degrees / 90);
-        else angle = ((angle + degrees) % 360 + 360) % 360;
+        else { angle = ((angle + degrees) % 360 + 360) % 360; tilt = 0; }
         ShowHud();
     }
 
     public bool TurningClip => IsToolBrush && d.clip != null;
 
-    /// <summary>Pipetta (P): the brush, angle and floor of what's under the mouse (a ball, the top of a pile, the tile).</summary>
+    /// <summary>Pipetta (P): the brush and angle of what's under the mouse on the current floor (a ball, the top of a pile, the tile).</summary>
     void Pick()
     {
         if (!hit) return;
@@ -277,17 +305,46 @@ public class LevelEditor : MonoBehaviour
             if (!d.cells.TryGetValue(cell, out c)) return;
             if (d.above.TryGetValue(cell, out var pile) && pile.Count > 0) (c, a) = pile[^1];
             else a = d.angles.GetValueOrDefault(cell, angle);
-            floor = d.floors.GetValueOrDefault(cell);
         }
         if (LevelBuilder.IsOriented(c)) angle = a;
+        tilt = c == LevelBuilder.TrackUp ? 1 : c == LevelBuilder.TrackDown ? -1 : 0;
+        if (tilt != 0) c = LevelBuilder.Track;
         tab = Tab.Build;
         category = LevelDraft.Brushes.Where(b => b.c == c).Select(b => b.category).DefaultIfEmpty(1).First(); // the numbered balls aren't in Brushes
         SetBrush(c);
     }
 
+    /// <summary>Shift + click: the topmost thing under the mouse on any floor; if it's an object (ball or module), goes to its floor and picks it (pipetta).</summary>
+    bool PickAnyFloor()
+    {
+        foreach (var (f, plan) in d.plans.Reverse())
+        {
+            if (!new Plane(Vector3.up, Vector3.up * f * LevelBuilder.FloorStep).Raycast(mouseRay, out float dist)) continue;
+            var p = mouseRay.GetPoint(dist);
+            var c = new Vector2Int(Mathf.RoundToInt(p.x), Mathf.RoundToInt(p.z));
+            var s = new Vector2Int(Mathf.RoundToInt(p.x * LevelBuilder.Sub), Mathf.RoundToInt(p.z * LevelBuilder.Sub));
+            bool ball = plan.objects.Keys.Any(o => LevelDraft.Dist(o, s) < 0.4f);
+            bool tile = plan.cells.TryGetValue(c, out var ch);
+            if (!ball && !tile) continue; // nothing on this floor: look below
+            if (!ball && ch is '.' or '#' or 'O') return false; // felt / rail / pocket on top: not an object
+            floor = d.floor = f;
+            cell = c;
+            sub = s;
+            Pick();
+            return true;
+        }
+        return false;
+    }
+
     public void ChangeFloor(int delta)
     {
         floor = Mathf.Clamp(floor + delta, 0, LevelDraft.MaxFloor);
+        ShowHud();
+    }
+
+    public void ToggleColumn()
+    {
+        column = !column;
         ShowHud();
     }
 
@@ -330,6 +387,24 @@ public class LevelEditor : MonoBehaviour
     {
         modal = true;
         ui.ShowEditorSettings(this);
+    }
+
+    public void CopyLevel()
+    {
+        GUIUtility.systemCopyBuffer = d.GetText(out _);
+        ui.Toast("Livello copiato negli appunti");
+    }
+
+    public void PasteLevel()
+    {
+        var text = GUIUtility.systemCopyBuffer;
+        if (string.IsNullOrWhiteSpace(text) || LevelBuilder.ToCells(text, Vector2Int.zero).Count == 0) { ui.Toast("Negli appunti non c'è un livello"); return; }
+        Record();
+        d.SetText(text, Vector2Int.zero);
+        d.SetGoal(Goal);
+        Changed();
+        Frame();
+        ui.Toast("Livello incollato dagli appunti");
     }
 
     public void ExportCurrent() => Export(editName, d.GetText(out _));
@@ -415,7 +490,7 @@ public class LevelEditor : MonoBehaviour
         if (!enabled) return; // a key left the editor (playtest, exit)
         bool overUi = EventSystem.current && EventSystem.current.IsPointerOverGameObject();
         CameraInput(kb, mouse, overUi);
-        var ray = Camera.main.ScreenPointToRay(mouse.position.ReadValue());
+        var ray = mouseRay = Camera.main.ScreenPointToRay(mouse.position.ReadValue());
         float dist = 0;
         hit = !overUi && new Plane(Vector3.up, Vector3.up * FloorY).Raycast(ray, out dist);
         if (hit)
@@ -442,9 +517,14 @@ public class LevelEditor : MonoBehaviour
         if (kb.digit3Key.wasPressedThisFrame) SelectTab(Tab.Delete);
         if ((LevelBuilder.IsOriented(brush) || TurningClip) && !ctrl)
         {
-            int step = TurningClip ? 90 : LevelDraft.RotateStep;
-            if (kb.rKey.wasPressedThisFrame || kb.eKey.wasPressedThisFrame) Rotate(shift ? -step : step);
+            int step = shift && !TurningClip ? 45 : 90; // a clip only turns by 90
+            if (kb.rKey.wasPressedThisFrame || kb.eKey.wasPressedThisFrame) Rotate(step);
             if (kb.qKey.wasPressedThisFrame) Rotate(-step);
+        }
+        if (brush == LevelBuilder.Track && !ctrl && (kb.wKey.wasPressedThisFrame || kb.sKey.wasPressedThisFrame))
+        {
+            tilt = Mathf.Clamp(tilt + (kb.wKey.wasPressedThisFrame ? 1 : -1), -1, 1);
+            ShowHud();
         }
         if (kb.pKey.wasPressedThisFrame) Pick();
         if (kb.pageUpKey.wasPressedThisFrame) ChangeFloor(1);
@@ -478,7 +558,7 @@ public class LevelEditor : MonoBehaviour
         if (!kb.ctrlKey.isPressed)
         {
             var move = new Vector3((kb.dKey.isPressed || kb.rightArrowKey.isPressed ? 1 : 0) - (kb.aKey.isPressed || kb.leftArrowKey.isPressed ? 1 : 0), 0,
-                (kb.wKey.isPressed || kb.upArrowKey.isPressed ? 1 : 0) - (kb.sKey.isPressed || kb.downArrowKey.isPressed ? 1 : 0));
+                (kb.wKey.isPressed && brush != LevelBuilder.Track || kb.upArrowKey.isPressed ? 1 : 0) - (kb.sKey.isPressed && brush != LevelBuilder.Track || kb.downArrowKey.isPressed ? 1 : 0)); // W / S tilt a track piece
             focus += flatRot * move * (distance * 0.8f * Time.unscaledDeltaTime);
         }
         var rot = Quaternion.Euler(pitch, yaw, 0);
@@ -490,8 +570,9 @@ public class LevelEditor : MonoBehaviour
     {
         yaw = 0;
         pitch = 55;
-        if (d.cells.Count == 0) { focus = Vector3.zero; distance = 20; return; }
-        float x0 = d.cells.Keys.Min(k => k.x), x1 = d.cells.Keys.Max(k => k.x), z0 = d.cells.Keys.Min(k => k.y), z1 = d.cells.Keys.Max(k => k.y);
+        if (d.Empty) { focus = Vector3.zero; distance = 20; return; }
+        var all = d.AllCells.ToList();
+        float x0 = all.Min(k => k.x), x1 = all.Max(k => k.x), z0 = all.Min(k => k.y), z1 = all.Max(k => k.y);
         focus = new Vector3((x0 + x1) / 2, 0, (z0 + z1) / 2 - 1.5f); // a bit toward the camera: the panel covers the bottom
         distance = Mathf.Clamp(Mathf.Max(x1 - x0, (z1 - z0) * 1.6f) * 0.9f + 6, 6, 80);
     }
@@ -502,6 +583,7 @@ public class LevelEditor : MonoBehaviour
         if (Keyboard.current.altKey.isPressed) return; // Alt + left = orbit
         if (left.wasPressedThisFrame && hit)
         {
+            shiftPick = shift;
             if (IsToolBrush)
             {
                 // no clip yet (or Shift): drag a selection; with a clip: click drops / pastes it
@@ -522,13 +604,15 @@ public class LevelEditor : MonoBehaviour
                 stroke = true;
                 strokeSaved = false;
                 lastPaint = default;
-                if (shift && !IsObjectBrush) rectStart = cell;
+                if (shift) rectStart = cell; // a ball brush has no rectangle: the click paints on release (or picks)
                 else Paint();
             }
         }
         else if (left.isPressed && stroke && !rectStart.HasValue && hit) Paint();
         if (left.wasReleasedThisFrame)
         {
+            if (shiftPick && rectStart == cell && PickAnyFloor()) { rectStart = null; stroke = false; shiftPick = false; ShowHud(); return; }
+            shiftPick = false;
             if (IsToolBrush && rectStart.HasValue)
             {
                 d.Select(brush, rectStart.Value, cell, sub);
@@ -537,7 +621,8 @@ public class LevelEditor : MonoBehaviour
             }
             else if (stroke)
             {
-                if (rectStart.HasValue && hit) Paint(); // the Shift rectangle
+                if (IsObjectBrush) rectStart = null;
+                if (hit) Paint(); // the Shift rectangle (a ball brush: one ball)
                 rectStart = null;
                 stroke = false;
                 ShowHud();
@@ -550,7 +635,8 @@ public class LevelEditor : MonoBehaviour
         if (!rectStart.HasValue && lastPaint == (cell, sub)) return;
         lastPaint = (cell, sub);
         var before = strokeSaved ? default : Snapshot();
-        if (!d.Apply(brush, cell, sub, rectStart, angle, floor, stack, erase)) return;
+        d.column = column;
+        if (!d.Apply(PaintBrush, cell, sub, rectStart, angle, floor, stack, erase)) return;
         if (!strokeSaved) { Push(before); strokeSaved = true; }
         Changed();
     }
@@ -564,7 +650,7 @@ public class LevelEditor : MonoBehaviour
         if (preview != null) Destroy(preview.root.gameObject);
         preview = null;
         GameManager.ApplyWorld(Mathf.Max(0, d.theme));
-        if (d.cells.Count == 0) return;
+        if (d.Empty) return;
         var lv = LevelBuilder.Build(d.GetText(out var min), "EditorLevel");
         lv.root.position = new Vector3(min.x, 0, min.y);
         preview = lv;
@@ -574,7 +660,7 @@ public class LevelEditor : MonoBehaviour
     void ShowHover()
     {
         bool small = IsObjectBrush || d.clip is { fine: true };
-        var key = hit ? $"{(small ? sub : cell)} {rectStart} {brush} {angle} {floor} {stack} {erase} {version} {d.clip?.GetHashCode()}" : null;
+        var key = hit ? $"{(small ? sub : cell)} {rectStart} {PaintBrush} {angle} {floor} {stack} {column} {erase} {version} {d.clip?.GetHashCode()}" : null;
         Box();
         if (key == hoverKey) return;
         // shortcut: the preview rebuilds the whole level, so it waits for the mouse to settle instead of chasing every cell; rebuild only the touched chunk if big levels still stutter
@@ -587,7 +673,8 @@ public class LevelEditor : MonoBehaviour
             return;
         }
         var (real, min) = Snapshot();
-        bool applied = d.Apply(brush, cell, sub, rectStart, angle, floor, stack, erase);
+        d.column = column;
+        bool applied = d.Apply(PaintBrush, cell, sub, rectStart, angle, floor, stack, erase);
         if (applied) Rebuild();
         d.SetText(real, min); // the clip and the pick-up stay
         if (!applied && ghost) Rebuild();

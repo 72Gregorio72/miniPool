@@ -72,7 +72,7 @@ public static partial class LevelBuilder
         var liner = new MeshBuilder();
         var inlay = new MeshBuilder(); // sight diamonds on the rail tops
         var noses = new List<Nose>();
-        var woodTops = new List<(TPoly p, float y)>();
+        var woodTops = new List<(TPoly p, float y, float skirt)>();
 
         // cushion nose a->b (n into the rail), minus the pocket openings
         void AddNose(Vector2 a, Vector2 b, Vector2 n, float y)
@@ -109,7 +109,7 @@ public static partial class LevelBuilder
                 foreach (var p in feltPieces)
                 {
                     felt.Top(p, y);
-                    EdgeWalls(p, Edge.Outer, rail && !diag ? null : felt, -FloorThickness, y);
+                    EdgeWalls(p, Edge.Outer, rail && !diag ? null : felt, lv.SkirtY(cell), y);
                     EdgeWalls(p, Edge.Hole, liner, y - PocketDepth, y);
                 }
                 if (!rail)
@@ -144,7 +144,7 @@ public static partial class LevelBuilder
                     if (o.funnelWood != null) woodPieces = Poly.Subtract(woodPieces, o.funnelWood, Edge.WoodFace);
                     woodPieces = Poly.Subtract(woodPieces, o.circle, Edge.Hole);
                 }
-                foreach (var p in woodPieces) woodTops.Add((p, y));
+                foreach (var p in woodPieces) woodTops.Add((p, y, lv.SkirtY(cell)));
 
                 // sight diamond on a straight rail every 2 tiles (even coordinate along it), none right beside a pocket
                 if (!diag && op == null && feltSides.Count == 1)
@@ -179,7 +179,7 @@ public static partial class LevelBuilder
         Cushions(noses, rubber, cushionTops);
 
         // wood never covers a cushion: the mitered corner of two cushions reaches into the rail tile beside them
-        foreach (var (p0, y) in woodTops)
+        foreach (var (p0, y, skirt) in woodTops)
         {
             var pieces = new List<TPoly> { p0 };
             foreach (var ct in cushionTops)
@@ -187,7 +187,7 @@ public static partial class LevelBuilder
             foreach (var p in pieces)
             {
                 wood.Top(p, y + RailHeight);
-                EdgeWalls(p, Edge.Outer, wood, -FloorThickness, y + RailHeight);
+                EdgeWalls(p, Edge.Outer, wood, skirt, y + RailHeight);
                 EdgeWalls(p, Edge.WoodFace, wood, y, y + RailHeight);
                 EdgeWalls(p, Edge.Hole, liner, y - PocketDepth, y + RailHeight);
             }
@@ -246,7 +246,7 @@ public static partial class LevelBuilder
             Vector2 a = mid - along, b = mid + along;
             float ya = lv.SurfaceY(cell, a), yb = lv.SurfaceY(cell, b);
             bool open = IsVoid(At(lv.ground, cell + d)) || Mathf.Min(lv.SurfaceY(cell + d, a), lv.SurfaceY(cell + d, b)) < Mathf.Max(ya, yb) - 1e-3f;
-            if (open) felt.Face(new[] { V(a, -FloorThickness), V(a, ya), V(b, yb), V(b, -FloorThickness) }, new Vector3(dv.x, 0, dv.y));
+            if (open) felt.Face(new[] { V(a, lv.SkirtY(cell)), V(a, ya), V(b, yb), V(b, lv.SkirtY(cell)) }, new Vector3(dv.x, 0, dv.y));
         }
     }
 

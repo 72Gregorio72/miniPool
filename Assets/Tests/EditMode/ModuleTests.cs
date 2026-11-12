@@ -293,6 +293,70 @@ public class ModuleTests
         Assert.Greater(maxX, 5.5f, "went across");
     }
 
+    // ---------- floors: each one is a table of its own ----------
+
+    // floor 0: a lane with sand on (4, 1); floor 2: felt over cells 3..5 of the same lane
+    const string SandUnderFelt = "#########\n#0..M...#\n#########\npiano 2 3 1\n...\n";
+
+    [Test] public void Floor_AboveAnother_LeavesWhatIsUnderIt()
+    {
+        Build(SandUnderFelt);
+        var under = new Vector3(4, R, 1);
+        var over = new Vector3(4, 2 * Step + R, 1);
+
+        Assert.AreEqual(2, lv.sheets.Count);
+        Assert.AreEqual('M', lv.Sheet(under).TileAt(under), "the sand is still there on floor 0");
+        Assert.AreEqual(0, lv.Sheet(under).GroundAt(under).Value, 1e-3f);
+        Assert.AreEqual('.', lv.Sheet(over).TileAt(over), "plain felt on floor 2");
+        Assert.AreEqual(2 * Step, lv.Sheet(over).GroundAt(over).Value, 1e-3f);
+    }
+
+    [Test] public void Floor_TwoUp_BallRollsUnderIt()
+    {
+        Build(SandUnderFelt);
+        var b = lv.balls[0];
+        PoolPhysics.Shoot(b, Vector3.right, 12, 0, 0.4f);
+        float maxX = 0;
+        for (int i = 0; i < 300; i++)
+        {
+            PoolPhysics.Simulate(lv, 0.01f);
+            maxX = Mathf.Max(maxX, b.transform.position.x);
+            Assert.AreEqual(R, b.transform.position.y, 1e-3f, "stays on floor 0");
+        }
+        Assert.Greater(maxX, 5.5f, "went under the upper floor");
+    }
+
+    [Test] public void Floor_WithNothingUnder_MakesNoTableBelow()
+    {
+        Build("#0.#\npiano 2 5 0\n..\n"); // floor 2 beside the lane, over nothing
+        var under = new Vector3(5, R, 0);
+        Assert.IsEmpty(lv.sheets[1].columns);
+        Assert.IsNull(lv.Sheet(under).GroundAt(under), "nothing was made under the raised cell");
+    }
+
+    [Test] public void Floor_OneUp_IsAStepForTheFloorBelow()
+    {
+        Build("#########\n#0......#\n#########\npiano 1 4 1\n.\n"); // one cell on floor 1 over the lane
+        var b = lv.balls[0];
+        PoolPhysics.Shoot(b, Vector3.right, 6, 0, 0.4f);
+        float maxX = 0;
+        for (int i = 0; i < 200; i++)
+        {
+            PoolPhysics.Simulate(lv, 0.01f);
+            maxX = Mathf.Max(maxX, b.transform.position.x);
+        }
+        Assert.Less(maxX, 3.5f - R + 0.02f, "no room under a floor one step up: it bounces off");
+    }
+
+    [Test] public void OldFile_RaisedCells_BecomeASolidLevel()
+    {
+        Build("#0.._....#\n---\n= 4 0 2\n= 7 0 2\n"); // old format: a bridge and a raised cell
+        Assert.AreEqual(2, lv.sheets.Count);
+        Assert.AreEqual('.', lv.TileAt(new Vector3(4, R, 0)), "felt under the old bridge");
+        Assert.AreEqual(' ', lv.TileAt(new Vector3(7, R, 0)), "the raised cell left floor 0...");
+        Assert.IsTrue(lv.WallsNear(new Vector3(7, R, 0)).Exists(w => w.bounds.Contains(new Vector2(7, 0))), "...but is a column a ball bounces off");
+    }
+
     [Test] public void WindFan_PushesLessFartherAway()
     {
         Lane("#U......#", "> 1 1 90\n"); // blows toward +x
@@ -432,6 +496,51 @@ public class ModuleTests
         Assert.AreEqual(2 + PoolPhysics.PlatformSpeed, b.transform.position.x, 0.05f);
     }
 
+    [Test] public void TimedSpikes_KillOnlyWhileUp()
+    {
+        Lane("#.!&.#", "0 6 3\n* 9 3\n"); // white on the purple ones (up first), grey on the green ones (down first)
+        PoolPhysics.Simulate(lv, 0.1f);
+        Assert.IsTrue(lv.balls[0].falling, "purple spikes start up");
+        Assert.IsFalse(lv.balls[1].falling, "green spikes start down");
+        PoolPhysics.Simulate(lv, PoolPhysics.TimedPeriod);
+        Assert.IsTrue(lv.balls[1].falling, "the green ones come up when the purple go down");
+    }
+
+    [Test] public void Platform_VerticalTrack_CarriesTheBallUpAFloor()
+    {
+        // platform -> track piece going up -> track piece on floor 1 right above it
+        Build("#####\n#H}.#\n#####\n---\n> 1 1 90\n0 3 3\npiano 1 2 1\n=\n---\n> 0 0 90\n");
+        var pl = lv.platforms[0];
+        Assert.AreEqual(2, pl.range);
+        Assert.AreEqual(Step, pl.path[^1].y, 1e-3f, "the last stop is one floor up");
+        Assert.Contains(pl, lv.sheets[1].platforms, "floor 1 knows it too");
+        PoolPhysics.Simulate(lv, 2f / PoolPhysics.PlatformSpeed);
+        var b = lv.balls[0];
+        Assert.IsFalse(b.falling);
+        Assert.AreEqual(2, b.transform.position.x, 0.05f);
+        Assert.AreEqual(Step + R, b.transform.position.y, 0.05f, "carried up a floor");
+    }
+
+    [Test] public void Platform_CarriesItsSpikes()
+    {
+        Lane("#.H    .#", "> 2 1 90\nsopra 2 1 X\n0 6 3\n");
+        Assert.Contains('X', lv.platforms[0].riders);
+        PoolPhysics.Simulate(lv, 0.1f);
+        Assert.IsTrue(lv.balls[0].falling, "a ball on a spiked platform dies");
+    }
+
+    [Test] public void Platform_TakesOnlySurfacesOnItsPile()
+    {
+        var cells = new Dictionary<Vector2Int, char> { [Vector2Int.zero] = LevelBuilder.PlatformTile };
+        var angles = new Dictionary<Vector2Int, int>();
+        var above = new Dictionary<Vector2Int, List<(char c, int angle)>>();
+        Assert.IsTrue(LevelBuilder.SetTile(cells, angles, Vector2Int.zero, 'M', 0, null, above, true));
+        Assert.AreEqual('M', above[Vector2Int.zero][0].c);
+        Assert.IsTrue(LevelBuilder.SetTile(cells, angles, Vector2Int.zero, 'P', 0, null, above, true)); // a block replaces it
+        Assert.AreEqual('P', cells[Vector2Int.zero]);
+        Assert.IsFalse(above.ContainsKey(Vector2Int.zero));
+    }
+
     [Test] public void Platform_FollowsItsTrackAroundACorner()
     {
         // platform going right onto a track piece that turns it toward the far side, two more pieces up
@@ -477,10 +586,17 @@ public class ModuleTests
 
     [Test] public void Magnet_PullsANearbyBallIn()
     {
-        Lane("#.......Z..#", "0 18 3\n");
+        Build("#########\n#.......#\n#..0....#\n#....Z..#\n#########\n");
         var b = lv.balls[0];
-        PoolPhysics.Simulate(lv, 8f);
-        Assert.AreEqual(8, b.transform.position.x, 0.3f);
+        PoolPhysics.Shoot(b, Vector3.right, 4, 0, 0.4f);
+        PoolPhysics.Simulate(lv, 0.6f);
+        Assert.Less(b.transform.position.z, 1.8f, "pulled toward the magnet as it passes");
+
+        // a very slow ball near the magnet is released so it stops and the turn can end
+        b.transform.position = new Vector3(4, R, 1);
+        b.v = Vector3.right * 0.2f;
+        b.w = Vector3.zero;
+        PoolPhysics.Simulate(lv, 0.5f);
         Assert.IsFalse(b.IsMoving);
     }
 

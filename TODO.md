@@ -22,3 +22,7 @@
 - [x] **Layout di `GameUI`** — `GameUI.Bar` (`HorizontalLayoutGroup`) per le barre di pulsanti: risultati, multiplayer, lista livelli utente (riga e pulsanti in alto), barra in alto dell'editor. Il resto resta in coordinate.
 - [x] **`PoolPhysics.Predict` online** — orizzonte da 3 a 2 s (max 1000 step). Non misurato: se la mira online scatta ancora, alzare `dt` o la soglia dei 50 ms in `UpdateGuide`.
 - [x] **level30**: palla 15 al posto della 3.
+
+spiegare camera al livello 2
+mettere x per rimuovere i testi nei primi livelli
+

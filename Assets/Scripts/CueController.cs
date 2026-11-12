@@ -22,6 +22,8 @@ public class CueController : MonoBehaviour
     (Vector3, float, Vector2, float, Vector3) guideKey;
 
     Transform stick;
+    /// <summary>The cue model (the HUD's power bar shows a copy).</summary>
+    public Transform Stick => stick;
     bool pulling;
     public bool Pulling => pulling; // onboarding hints (GameManager.Hint)
     float power;

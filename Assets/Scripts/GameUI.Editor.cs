@@ -16,8 +16,8 @@ public partial class GameUI
 
     // ---------- the user's levels ----------
 
-    public void ShowMyLevels(List<string> names, Action create, Action<string> edit, Action<string> play, Action<string> duplicate, Action<string> export,
-        Action<string> delete, Action import, Action folder, Action back)
+    public void ShowMyLevels(List<string> names, Action create, Action<string> edit, Action<string> play, Action<string> copy, Action<string> duplicate, Action<string> export,
+        Action<string> delete, Action paste, Action import, Action folder, Action back)
     {
         Hide();
         screen = Page.MyLevels;
@@ -31,7 +31,8 @@ public partial class GameUI
 
         var c = Corner(full, new Vector2(0.5f, 0.5f));
         var accent = Worlds.ThemeOf(0).accent;
-        Bar(c, new Vector2(0, 300), new Vector2(360, 84), 20, ("Nuovo livello", accent, Ink, create), ("Importa file", Glass, White, import), ("Apri cartella", Glass, White, folder));
+        Bar(c, new Vector2(0, 300), new Vector2(320, 84), 20, ("Nuovo livello", accent, Ink, create), ("Incolla livello", Glass, White, paste),
+            ("Importa file", Glass, White, import), ("Apri cartella", Glass, White, folder));
 
         int pages = Mathf.Max(1, (names.Count + LevelsPerPage - 1) / LevelsPerPage);
         myLevelsPage = Mathf.Clamp(myLevelsPage, 0, pages - 1);
@@ -43,22 +44,22 @@ public partial class GameUI
             string n = shown[i];
             float y = 180 - i * 96;
             var row = Box(c, Tile, new Vector2(0, y), new Vector2(1500, 84));
-            Label(row, n, 34, White, new Vector2(-720, 0), new Vector2(560, 84), TextAnchor.MiddleLeft, true);
+            Label(row, n, 34, White, new Vector2(-720, 0), new Vector2(500, 84), TextAnchor.MiddleLeft, true);
             Button del = null;
             bool armed = false;
-            del = Bar(row, new Vector2(296, 0), new Vector2(170, 64), 12, ("Modifica", accent, Ink, () => edit(n)), ("Gioca", Glass, White, () => play(n)),
-                ("Duplica", Glass, White, () => duplicate(n)), ("Esporta", Glass, White, () => export(n)), ("Elimina", Glass, White, () =>
+            del = Bar(row, new Vector2(265, 0), new Vector2(150, 64), 10, ("Modifica", accent, Ink, () => edit(n)), ("Gioca", Glass, White, () => play(n)),
+                ("Copia", Glass, White, () => copy(n)), ("Duplica", Glass, White, () => duplicate(n)), ("Esporta", Glass, White, () => export(n)), ("Elimina", Glass, White, () =>
                 {
                     if (armed) { delete(n); return; }
                     armed = true; // second click deletes
                     del.GetComponentInChildren<Text>().text = "Sicuro?";
-                }))[4];
+                }))[5];
             del.GetComponentInChildren<Text>().fontSize = 22;
         }
         if (pages > 1)
         {
             float by = 180 - LevelsPerPage * 96 + 10;
-            void Turn(int d) { myLevelsPage += d; ShowMyLevels(names, create, edit, play, duplicate, export, delete, import, folder, back); }
+            void Turn(int d) { myLevelsPage += d; ShowMyLevels(names, create, edit, play, copy, duplicate, export, delete, paste, import, folder, back); }
             if (myLevelsPage > 0) ArrowButton(c, "‹", new Vector2(-120, by), () => Turn(-1));
             Label(c, $"{myLevelsPage + 1} / {pages}", 30, White, new Vector2(0, by), new Vector2(200, 50), bold: true, shadow: true);
             if (myLevelsPage < pages - 1) ArrowButton(c, "›", new Vector2(120, by), () => Turn(1));
@@ -76,7 +77,7 @@ public partial class GameUI
         var full = Rect(root, Vector2.zero, Vector2.zero);
         var accent = Worlds.ThemeOf(0).accent;
 
-        // top bar: undo / redo + name on the left, playtest / save / export / settings / exit on the right
+        // top bar: undo / redo + name on the left, playtest / save / copy / paste / export / settings / exit on the right
         var tl = Corner(full, new Vector2(0, 1));
         var undo = SmallBtn(tl, "↶ Annulla", new Vector2(110, -55), new Vector2(180, 64), e.Undo);
         var redo = SmallBtn(tl, "↷ Ripeti", new Vector2(300, -55), new Vector2(180, 64), e.Redo);
@@ -89,8 +90,9 @@ public partial class GameUI
         Label(tl, LevelDraft.HelpOf(e.brush), 22, new Color(1, 1, 1, 0.8f), new Vector2(30, -115 - warnings.Count * 34), new Vector2(1300, 34), TextAnchor.MiddleLeft, false, true);
 
         var tr = Corner(full, new Vector2(1, 1));
-        foreach (var b in Bar(tr, new Vector2(-485, -55), new Vector2(176, 64), 14, ("▶ Prova", accent, Ink, e.Playtest), ("Salva", Glass, White, () => e.Save()),
-            ("Esporta", Glass, White, e.ExportCurrent), ("Livello…", Glass, White, e.Settings), ("Esci", Glass, White, e.Exit)))
+        foreach (var b in Bar(tr, new Vector2(-568, -55), new Vector2(148, 64), 10, ("▶ Prova", accent, Ink, e.Playtest), ("Salva", Glass, White, () => e.Save()),
+            ("Copia", Glass, White, e.CopyLevel), ("Incolla", Glass, White, e.PasteLevel), ("Esporta", Glass, White, e.ExportCurrent),
+            ("Livello…", Glass, White, e.Settings), ("Esci", Glass, White, e.Exit)))
             b.GetComponentInChildren<Text>().fontSize = 24;
 
         // bottom panel
@@ -119,12 +121,14 @@ public partial class GameUI
         else if (e.tab == LevelEditor.Tab.Edit) EditTools(bc, e, accent);
         else DeleteTools(bc, e, accent);
 
-        // right column: floor, rotation, stacking
+        // right column: floor, rotation, stacking, column
         Stepper(bc, "Piano", e.floor.ToString(), new Vector2(760, 240), d => e.ChangeFloor(d));
         bool oriented = LevelBuilder.IsOriented(e.brush);
-        Stepper(bc, "Rotazione", oriented ? $"{e.SnappedAngle}°" : e.TurningClip ? "pezzo" : "—", new Vector2(760, 150), d => e.Rotate(d * (e.TurningClip ? 90 : LevelDraft.RotateStep)));
-        SmallBtn(bc, e.stack ? "Sovrapposizione: sì" : "Sovrapposizione: no", new Vector2(760, 60), new Vector2(300, 64), e.ToggleStack)
+        Stepper(bc, "Rotazione", oriented && e.brush == LevelBuilder.Track && e.tilt != 0 ? (e.tilt > 0 ? "su" : "giù") : oriented ? $"{e.SnappedAngle}°" : e.TurningClip ? "pezzo" : "—", new Vector2(760, 150), d => e.Rotate(d * (e.TurningClip ? 90 : LevelDraft.RotateStep)));
+        SmallBtn(bc, e.stack ? "Sovrapposizione: sì" : "Sovrapposizione: no", new Vector2(760, 82), new Vector2(300, 44), e.ToggleStack)
             .GetComponent<Image>().color = e.stack ? accent : Glass;
+        SmallBtn(bc, e.column ? "Colonna piena: sì" : "Colonna piena: no", new Vector2(760, 32), new Vector2(300, 44), e.ToggleColumn)
+            .GetComponent<Image>().color = e.column ? accent : Glass;
     }
 
     void BuildPalette(Transform bc, LevelEditor e, Color accent)

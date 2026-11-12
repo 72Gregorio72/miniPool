@@ -150,6 +150,22 @@ def spikes():
     export(join(parts, "Spikes"), "Spikes")
 
 
+def timed_spikes():
+    # timed spikes ('!' / '&'): the base and the tips are separate models, Unity moves the tips up and down
+    reset()
+    export(chamfer_box("TimedSpikesBase", (1, 1, 0.12), 0.03, "TimedSpikes"), "TimedSpikesBase")
+    reset()
+    cones = []
+    for i in range(3):
+        for j in range(3):
+            bpy.ops.mesh.primitive_cone_add(vertices=4, radius1=0.16, radius2=0, depth=0.7,
+                                            location=((i - 1) * 0.3, (j - 1) * 0.3, 0.35), rotation=(0, 0, math.pi / 4))
+            cone = bpy.context.active_object
+            cone.data.materials.append(material("Metal"))
+            cones.append(cone)
+    export(join(cones, "SpikeTips"), "SpikeTips")
+
+
 def fan():
     # jump tile ('J'): octagonal housing open on top, dark duct inside; the blades are a separate model (Unity spins them)
     reset()
@@ -249,6 +265,7 @@ cue()
 ball()
 pillar()
 spikes()
+timed_spikes()
 fan()
 fan_blades()
 booster()

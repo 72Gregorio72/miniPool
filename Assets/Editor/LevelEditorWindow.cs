@@ -56,7 +56,12 @@ public class LevelEditorWindow : EditorWindow
     [SerializeField] bool dirty, painting = true;
     [SerializeField] char brush = '#';
     [SerializeField] int boostAngle = 90;
+    int tilt; // track piece: 1 = up, -1 = down (W / S), 0 = flat
+
+    // what gets painted: the track brush tilted up / down is a vertical piece
+    char PaintBrush => brush == LevelBuilder.Track && tilt != 0 ? (tilt > 0 ? LevelBuilder.TrackUp : LevelBuilder.TrackDown) : brush;
     [SerializeField] int floor;             // painted tiles go on this floor (y = floor * FloorStep)
+    [SerializeField] bool column;           // "Colonna piena": what gets painted is full down to what's under it (LevelDraft.column)
     [SerializeField] bool stack;            // "Sovrapposizione": a module painted on another goes on top of it instead of replacing it
 
     const string BallChars = LevelDraft.BallChars;
@@ -167,7 +172,7 @@ public class LevelEditorWindow : EditorWindow
     void OnPlayMode(PlayModeStateChange s)
     {
         if (s == PlayModeStateChange.ExitingEditMode) DestroyPreview();
-        if (s == PlayModeStateChange.EnteredEditMode) Rebuild();
+        if (s == PlayModeStateChange.EnteredEditMode) { Rebuild(); Repaint(); }
     }
 
     void SetText(string text, Vector2Int min) => d.SetText(text, min);
@@ -209,8 +214,19 @@ public class LevelEditorWindow : EditorWindow
             SceneView.RepaintAll();
             return true;
         }
+        if (e.type == EventType.KeyDown && (e.keyCode == KeyCode.W || e.keyCode == KeyCode.S) && brush == LevelBuilder.Track && !e.control)
+        {
+            tilt = Mathf.Clamp(tilt + (e.keyCode == KeyCode.W ? 1 : -1), -1, 1);
+            e.Use();
+            if (hovering) ShowHover(true);
+            Repaint();
+            SceneView.RepaintAll();
+            return true;
+        }
         if (e.type != EventType.KeyDown || (e.keyCode != KeyCode.R && e.keyCode != KeyCode.Q) || !LevelBuilder.IsOriented(brush)) return false;
-        boostAngle = ((boostAngle + (e.shift || e.keyCode == KeyCode.Q ? -RotateStep : RotateStep)) % 360 + 360) % 360;
+        int step = e.shift ? 45 : 90; // R / Q = 90°, Shift = 45°
+        tilt = 0;
+        boostAngle = ((boostAngle + (e.keyCode == KeyCode.Q ? -step : step)) % 360 + 360) % 360;
         e.Use();
         if (hovering) ShowHover(true);
         Repaint();
@@ -233,7 +249,8 @@ public class LevelEditorWindow : EditorWindow
             {
                 piece = null;
                 level = indices.Length == 0 ? 1 : indices.Max() + 1;
-                SetText(DefaultTable, Vector2Int.zero);
+                SetText(DefaultTable + "8 36 15\n", Vector2Int.zero);
+                d.SetGoal(Worlds.BallOf(level));
                 Changed();
             }
             if (GUILayout.Button(dirty ? "Salva *" : "Salva")) Save();
@@ -241,22 +258,18 @@ public class LevelEditorWindow : EditorWindow
                 if (GUILayout.Button("Prova ▶")) Test();
         }
         PieceGUI();
-        // copy a level, pick another one, paste: it replaces the level shown (unsaved until Salva)
+        // copy a level, pick another one, paste (from clipboard or from the in-game "Crea livelli"): it replaces the level shown (unsaved until Salva)
         using (new EditorGUILayout.HorizontalScope())
         {
             if (GUILayout.Button("Copia livello")) EditorGUIUtility.systemCopyBuffer = GetText(out _);
-            if (GUILayout.Button("Incolla livello"))
+            if (GUILayout.Button("Incolla livello")) PasteLevel(EditorGUIUtility.systemCopyBuffer);
+            var custom = LevelEditor.Names();
+            if (custom.Count > 0)
             {
-                var text = EditorGUIUtility.systemCopyBuffer;
-                if (string.IsNullOrWhiteSpace(text) || LevelBuilder.ToCells(text, Vector2Int.zero).Count == 0)
-                    ShowNotification(new GUIContent("Negli appunti non c'è un livello"));
-                else
-                {
-                    SetText(text, Vector2Int.zero);
-                    Changed();
-                }
+                int pick = EditorGUILayout.Popup(0, custom.Prepend("Da Crea livelli…").ToArray(), GUILayout.Width(140));
+                if (pick > 0) PasteLevel(File.ReadAllText(Path.Combine(LevelEditor.Dir, custom[pick - 1] + ".txt")));
             }
-        }
+        } 
         EditorGUILayout.LabelField($"File: {CurrentPath}", EditorStyles.miniLabel);
         if (!EditingPiece)
         {
@@ -265,12 +278,16 @@ public class LevelEditorWindow : EditorWindow
             int fl = Mathf.Max(0, EditorGUILayout.IntField(new GUIContent("Falli concessi", "Quanti falli si possono fare in un tentativo: ogni fallo annulla il tiro invece di ricominciare. Finiti quelli, il fallo dopo fa ricominciare il livello (e i falli tornano tutti). 0 = ogni fallo ricomincia"), d.fouls));
             if (fl != d.fouls) { d.fouls = fl; dirty = true; draft = GetText(out draftMin); }
         }
+        bool solid = EditorGUILayout.Toggle(new GUIContent("Colonne piene (tutte)", "Tutto il livello: acceso, ogni casella rialzata è una colonna piena fino a quello che ha sotto (livelli vecchi); spento, nessuna. Per decidere casella per casella: \"Colonna piena sotto\" qui sotto."), d.solid);
+        if (solid != d.solid) { d.solid = solid; dirty = true; draft = GetText(out draftMin); }
         if (EditingPiece)
             EditorGUILayout.HelpBox("Pezzo online: chiudilo con sponde. Quando si attacca, le sue sponde sovrapposte a quelle del tavolo si aprono dove c'è panno da entrambi i lati. Niente palle. Il centro del pezzo segue il mouse.", MessageType.None);
 
         bool wasPainting = painting;
         painting = EditorGUILayout.ToggleLeft("Disegna nella Scene view", painting);
         if (wasPainting && !painting) EndHover();
+        column = EditorGUILayout.ToggleLeft(new GUIContent("Colonna piena sotto",
+            "Acceso: quello che disegni è una colonna piena fino a quello che ha sotto. Spento: è una lastra, sotto resta il vuoto e gli altri piani non cambiano."), column);
         stack = EditorGUILayout.ToggleLeft(new GUIContent("Sovrapposizione moduli",
             "Acceso: un modulo disegnato su un altro modulo ci va sopra (fino a " + LevelBuilder.MaxStack + " per casella) e si muove con lui " +
             "(spine su un muro a tempo salgono e scendono col muro); la gomma toglie solo quello in cima. Spento: il modulo nuovo sostituisce quelli che c'erano."), stack);
@@ -301,7 +318,8 @@ public class LevelEditorWindow : EditorWindow
         for (int i = 0; i < brushes.Length; i += perRow)
             using (new EditorGUILayout.HorizontalScope())
                 foreach (var b in brushes.Skip(i).Take(perRow)) BrushButton(b);
-        if (LevelBuilder.IsOriented(brush)) EditorGUILayout.LabelField($"Rotazione: {boostAngle}°" +
+        if (brush == LevelBuilder.Track && tilt != 0) EditorGUILayout.LabelField(tilt > 0 ? "Estensore: su (W / S)" : "Estensore: giù (W / S)", EditorStyles.miniLabel);
+        else if (LevelBuilder.IsOriented(brush)) EditorGUILayout.LabelField($"Rotazione: {boostAngle}°" +
             (brush is LevelBuilder.Ramp or LevelBuilder.PlatformTile or LevelBuilder.DiagRail ? $" (usa {(Mathf.RoundToInt(boostAngle / 90f) * 90 % 360 + 360) % 360}°: solo multipli di 90)" : ""), EditorStyles.miniLabel);
         floor = EditorGUILayout.IntSlider("Piano (PagSu / PagGiù)", floor, 0, MaxFloor);
 
@@ -402,13 +420,17 @@ public class LevelEditorWindow : EditorWindow
     }
 
     // the brush applied at the hovered cell (or the Shift rectangle); returns whether anything changed
-    bool Apply() => d.Apply(brush, hoverCell, hoverSub, rectStart, boostAngle, floor, stack, hoverErase);
+    bool Apply()
+    {
+        d.column = column;
+        return d.Apply(PaintBrush, hoverCell, hoverSub, rectStart, boostAngle, floor, stack, hoverErase);
+    }
 
     // rebuilds the preview as if the brush were applied where the mouse is, then puts the real level data back
     void ShowHover(bool force)
     {
         bool small = LevelBuilder.IsObject(brush);
-        var key = $"{(small || d.clip is { fine: true } ? hoverSub : hoverCell)} {rectStart} {brush} {boostAngle} {floor} {stack} {hoverErase} {d.cells.Count} {d.objects.Count} {dirty} {d.clip?.GetHashCode()}";
+        var key = $"{(small || d.clip is { fine: true } ? hoverSub : hoverCell)} {rectStart} {PaintBrush} {boostAngle} {floor} {stack} {column} {hoverErase} {d.cells.Count} {d.objects.Count} {dirty} {d.clip?.GetHashCode()}";
         hovering = true;
         if (!force && key == hoverKey) return;
         // shortcut: the preview rebuilds the whole level, so it waits for the mouse to settle (HoverLater) instead of chasing every cell
@@ -434,8 +456,8 @@ public class LevelEditorWindow : EditorWindow
             {
                 int n = ("0" + BallChars).IndexOf(o.Value);
                 if (n < 0) continue; // the rack is not a ball
-                var q = new Vector3(o.Key.x, 0, o.Key.y) / LevelBuilder.Sub;
-                q.y = (lv.GroundAt(q - lv.root.position) ?? 0) + Ball.Radius;
+                var q = new Vector3(o.Key.x / (float)LevelBuilder.Sub, FloorY, o.Key.y / (float)LevelBuilder.Sub);
+                q.y = (lv.Sheet(q - lv.root.position).GroundAt(q - lv.root.position) ?? FloorY) + Ball.Radius;
                 var old = LevelBuilder.SpawnBall(n, q, null).gameObject;
                 old.transform.SetParent(lv.root, true);
                 foreach (var t in old.GetComponentsInChildren<Transform>(true)) t.gameObject.hideFlags = HideFlags.DontSave | HideFlags.NotEditable;
@@ -494,6 +516,22 @@ public class LevelEditorWindow : EditorWindow
     const int MaxFloor = LevelDraft.MaxFloor;
     float FloorY => floor * LevelBuilder.FloorStep;
 
+    void PasteLevel(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text) || LevelBuilder.ToCells(text, Vector2Int.zero).Count == 0)
+        {
+            ShowNotification(new GUIContent("Negli appunti non c'è un livello"));
+            return;
+        }
+        SetText(text, Vector2Int.zero);
+        if (!EditingPiece)
+        {
+            d.theme = -1; // game levels take their world's theme
+            d.SetGoal(Worlds.BallOf(level));
+        }
+        Changed();
+    }
+
     void Changed()
     {
         dirty = true;
@@ -507,7 +545,7 @@ public class LevelEditorWindow : EditorWindow
     LevelBuilder.Level Rebuild()
     {
         DestroyPreview();
-        if (EditorApplication.isPlayingOrWillChangePlaymode || d.cells.Count == 0) return null;
+        if (EditorApplication.isPlayingOrWillChangePlaymode || d.Empty) return null;
         LevelBuilder.SetTheme(Worlds.ThemeOf(Worlds.WorldOf(level)));
         var lv = LevelBuilder.Build(GetText(out var min), PreviewName);
         lv.root.position = new Vector3(min.x, 0, min.y);
@@ -546,7 +584,7 @@ public class LevelEditorWindow : EditorWindow
     {
         Directory.CreateDirectory(Path.GetDirectoryName(CurrentPath));
         var text = GetText(out _);
-        if (EditingPiece && pieceOverlay) text += (text.Split('\n').Contains("---") ? "" : "---\n") + LevelBuilder.OverlayTag + "\n";
+        if (EditingPiece && pieceOverlay) text = LevelBuilder.AddLines(text, LevelBuilder.OverlayTag + "\n");
         File.WriteAllText(CurrentPath, text);
         AssetDatabase.ImportAsset(CurrentPath);
         dirty = false;

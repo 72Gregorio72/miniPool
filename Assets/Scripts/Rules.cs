@@ -24,6 +24,13 @@ public static class Rules
     // crown on a level: won in at most `par` shots (best = fewest shots of a winning run, 0 = never won; par 0 = not set)
     public static bool Crown(int best, int par) => par > 0 && best > 0 && best <= par;
 
+    /// <summary>Levels open one after the other: the first of `order` always, any other once the one before it is completed.</summary>
+    public static bool Unlocked(System.Collections.Generic.IList<int> order, int level, System.Func<int, bool> completed)
+    {
+        int i = order.IndexOf(level);
+        return i == 0 || i > 0 && completed(order[i - 1]);
+    }
+
     /// <param name="firstHit">first ball the cue touched, -1 if none</param>
     /// <param name="potted">balls that dropped into a pocket this shot</param>
     /// <param name="lost">balls that left the table without a pocket (fell off, spikes) this shot</param>
