@@ -14,25 +14,28 @@ public static class Worlds
         public string name;
         public Color felt, cushion, wood, darkWood, room, sky, accent;
         public Hall hall;
+        // world select map (WorldMap): the world is a billiards tournament in a city, its ball stands there
+        public string country, tournament;
+        public Vector2 city; // (longitude, latitude)
     }
 
     public static readonly Theme[] Themes =
     {
         new() { name = "Classico", felt = new(0.1f, 0.58f, 0.38f), cushion = new(0.07f, 0.46f, 0.3f), wood = new(0.66f, 0.36f, 0.17f),
             darkWood = new(0.36f, 0.19f, 0.1f), room = new(0.25f, 0.22f, 0.2f), sky = new(0.16f, 0.13f, 0.12f), accent = new(1f, 0.78f, 0.3f),
-            hall = Hall.Classic },
+            hall = Hall.Classic, country = "Regno Unito", tournament = "Open di Londra", city = new(-0.1f, 51.5f), },
         // world 2 (the new modules): teal felt, so the blue portal and the ice stand out (production/levels/mondo-2/layout.md)
         new() { name = "Laguna", felt = new(0.1f, 0.45f, 0.48f), cushion = new(0.07f, 0.33f, 0.36f), wood = new(0.93f, 0.88f, 0.78f),
             darkWood = new(0.5f, 0.4f, 0.3f), room = new(0.96f, 0.8f, 0.55f), sky = new(0.55f, 0.82f, 0.95f), accent = new(1f, 0.62f, 0.25f),
-            hall = Hall.Lagoon },
+            hall = Hall.Lagoon, country = "Italia", tournament = "Trofeo della Laguna", city = new(12.3f, 45.4f), },
         new() { name = "Oceano", felt = new(0.1f, 0.42f, 0.78f), cushion = new(0.07f, 0.32f, 0.62f), wood = new(0.93f, 0.88f, 0.78f),
-            darkWood = new(0.55f, 0.47f, 0.38f), room = new(0.85f, 0.78f, 0.6f), sky = new(0.45f, 0.75f, 0.92f), accent = new(0.3f, 0.85f, 1f) },
+            darkWood = new(0.55f, 0.47f, 0.38f), room = new(0.85f, 0.78f, 0.6f), sky = new(0.45f, 0.75f, 0.92f), accent = new(0.3f, 0.85f, 1f), country = "Australia", tournament = "Sydney Masters", city = new(151.2f, -33.9f), },
         new() { name = "Tramonto", felt = new(0.85f, 0.3f, 0.32f), cushion = new(0.68f, 0.2f, 0.25f), wood = new(0.3f, 0.16f, 0.25f),
-            darkWood = new(0.18f, 0.09f, 0.15f), room = new(0.4f, 0.2f, 0.35f), sky = new(0.98f, 0.6f, 0.4f), accent = new(1f, 0.55f, 0.35f) },
+            darkWood = new(0.18f, 0.09f, 0.15f), room = new(0.4f, 0.2f, 0.35f), sky = new(0.98f, 0.6f, 0.4f), accent = new(1f, 0.55f, 0.35f), country = "Stati Uniti", tournament = "Las Vegas Classic", city = new(-115.1f, 36.2f), },
         new() { name = "Ghiaccio", felt = new(0.55f, 0.85f, 0.92f), cushion = new(0.4f, 0.72f, 0.82f), wood = new(0.92f, 0.95f, 0.98f),
-            darkWood = new(0.62f, 0.7f, 0.78f), room = new(0.88f, 0.93f, 0.97f), sky = new(0.78f, 0.88f, 0.96f), accent = new(0.55f, 0.9f, 1f) },
+            darkWood = new(0.62f, 0.7f, 0.78f), room = new(0.88f, 0.93f, 0.97f), sky = new(0.78f, 0.88f, 0.96f), accent = new(0.55f, 0.9f, 1f), country = "Islanda", tournament = "Coppa dei Ghiacci", city = new(-21.9f, 64.1f), },
         new() { name = "Notte", felt = new(0.42f, 0.2f, 0.75f), cushion = new(0.32f, 0.14f, 0.6f), wood = new(0.12f, 0.12f, 0.16f),
-            darkWood = new(0.07f, 0.07f, 0.1f), room = new(0.1f, 0.08f, 0.16f), sky = new(0.05f, 0.04f, 0.1f), accent = new(0.85f, 0.45f, 1f) },
+            darkWood = new(0.07f, 0.07f, 0.1f), room = new(0.1f, 0.08f, 0.16f), sky = new(0.05f, 0.04f, 0.1f), accent = new(0.85f, 0.45f, 1f), country = "Giappone", tournament = "Tokyo Night Cup", city = new(139.7f, 35.7f), },
     };
 
     public static int WorldOf(int level) => (level - 1) / LevelsPerWorld;          // 0-based

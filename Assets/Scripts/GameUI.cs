@@ -22,11 +22,12 @@ public partial class GameUI : MonoBehaviour
     public List<int> levels = new();
 
     static readonly Color White = Color.white, Ink = new(0.12f, 0.13f, 0.16f), Grey = new(0.5f, 0.53f, 0.58f),
-        Soft = new(0.93f, 0.94f, 0.95f), Glass = new(1, 1, 1, 0.14f), RecordColor = new(0.9f, 0.55f, 0.05f),
+        Soft = new(0.93f, 0.94f, 0.95f), Cream = new(0.96f, 0.92f, 0.84f), Glass = new(1, 1, 1, 0.14f),
         CrownGold = new(1f, 0.78f, 0.15f); // crown outline around a level's ball
+    Font TitleFont => view && view.skinName ? view.skinName.font : null; // the menu's slab font (Alfa Slab One)
     const float PlaneDistance = 0.3f, ModelDistance = 0.2f; // canvas and 3D icons, in front of the camera
 
-    enum Page { None, Home, Worlds, Levels, Skins, Cues, Pause, Settings, MyLevels, Editor }
+    enum Page { None, Home, Intro, Worlds, Levels, Skins, Cues, Pause, Settings, MyLevels, Editor }
     Page screen;
     public bool OnSettings => screen == Page.Settings;
     public int escFrame; // frame in which this UI used Esc, so the game doesn't use it too
@@ -66,8 +67,9 @@ public partial class GameUI : MonoBehaviour
     readonly Dictionary<int, Transform> icons = new(); // existing levels' balls on the table
     Transform popBall;
     readonly List<GameObject> spawned = new(); // level balls, line pieces, world cards: gone with Hide
-    readonly List<(int world, MenuWorldCard card)> worldCards = new(); // open worlds only
+    readonly Dictionary<int, Transform> pins = new(); // world map: open world -> its ball on the map
     int worldSel;
+    float introT; // "Gioca": seconds since the break shot
     readonly Dictionary<int, Transform> skinBalls = new(); // skin index -> its ball on the vertical table
     static Material lineMat;
 
@@ -114,6 +116,7 @@ public partial class GameUI : MonoBehaviour
         pop = null;
         popBall = null;
         marker = null;
+        mapCard = null;
         if (view)
         {
             view.home.gameObject.SetActive(false);
@@ -124,7 +127,7 @@ public partial class GameUI : MonoBehaviour
         if (view && view.skins) view.skins.gameObject.SetActive(false);
         foreach (var o in spawned) if (o) Destroy(o);
         spawned.Clear();
-        worldCards.Clear();
+        pins.Clear();
         ClearPreviews();
         foreach (Transform c in root) if (c != toasts && c != hud) Destroy(c.gameObject);
     }
@@ -332,7 +335,7 @@ public partial class GameUI : MonoBehaviour
             ShowSkin(skinShown);
         });
         if (view.skinBackButton) view.skinBackButton.onClick.AddListener(() => { Sfx.Play(Sfx.Kind.Click, 1); ShowHome(); });
-        homeActions = new Action[] { ShowWorlds, () => ShowMultiplayer(null), () => onCreate?.Invoke(), ShowSkins, () => ShowSettings(ShowHome), Quit };
+        homeActions = new Action[] { PlayIntro,() => ShowMultiplayer(null), () => onCreate?.Invoke(), ShowSkins, () => ShowSettings(ShowHome), Quit };
         for (int i = 0; i < view.homeItems.Length && i < homeActions.Length; i++)
         {
             int k = i;
@@ -362,6 +365,15 @@ public partial class GameUI : MonoBehaviour
         Vector3 pos;
         Quaternion rot;
         float fov;
+        if (screen == Page.Intro && view && view.view)
+        {
+            // from the shot on: ease-in-back = a small pull back, then the dive toward the felt; ShowWorlds then eases out over the map
+            float u = Mathf.Clamp01(introT / IntroSwap), s = (IntroBack + 1) * u * u * u - IntroBack * u * u;
+            var from = view.view.transform;
+            c.transform.SetPositionAndRotation(from.position + from.forward * IntroDive * s, from.rotation);
+            c.fieldOfView = view.view.fieldOfView;
+            return;
+        }
         if (screen == Page.Cues && rack)
         {
             fov = RackFov;
@@ -378,7 +390,7 @@ public partial class GameUI : MonoBehaviour
             rot = from.transform.rotation;
             fov = from.fieldOfView;
         }
-        float k = glideUntil > Time.unscaledTime || screen == Page.Cues ? 1 - Mathf.Exp(-6 * Time.unscaledDeltaTime) : 1;
+        float k = glideUntil > Time.unscaledTime || screen == Page.Cues ? 1 - Mathf.Exp((screen == Page.Worlds ? -3 : -6) * Time.unscaledDeltaTime) : 1;
         c.transform.SetPositionAndRotation(Vector3.Lerp(c.transform.position, pos, k), Quaternion.Slerp(c.transform.rotation, rot, k));
         c.fieldOfView = Mathf.Lerp(c.fieldOfView, fov, k);
     }
@@ -399,6 +411,24 @@ public partial class GameUI : MonoBehaviour
         }
         view.home.gameObject.SetActive(true);
         HomeSelect(Mathf.Clamp(homeSel, 0, homeActions.Length - 1));
+    }
+
+    // intro: seconds to the map, how far the camera dives toward the felt, how much it pulls back first (ease-in-back), cue speed
+    const float IntroSwap = 1.1f, IntroDive = 7, IntroBack = 2.5f, IntroSpeed = 38;
+
+    // "Gioca": the home's cue ball breaks the rack for real (PoolPhysics), the camera flies up, then down onto the world map
+    void PlayIntro()
+    {
+        var cue = table?.balls.FirstOrDefault(b => b && b.number == 0);
+        var apex = table?.balls.Where(b => b && b.number != 0).OrderBy(b => b.transform.position.x).FirstOrDefault(); // the rack grows toward +x
+        if (!cue || !apex || !view || levels.Count == 0) { ShowWorlds(); return; }
+        screen = Page.Intro;
+        marker = null;
+        view.home.gameObject.SetActive(false);
+        introT = 0;
+        var dir = apex.transform.position - cue.transform.position;
+        dir.y = 0;
+        PoolPhysics.Shoot(cue, dir.normalized, IntroSpeed, 0, 0.2f);
     }
 
     Text ItemLabel(int i) => i < view.homeItems.Length && view.homeItems[i] ? view.homeItems[i].GetComponentInChildren<Text>() : null;
@@ -424,18 +454,19 @@ public partial class GameUI : MonoBehaviour
     {
         Hide();
         screen = Page.Pause;
+        var t = Worlds.ThemeOf(0);
         var dimmer = Box(root, new Color(0, 0, 0, 0.45f), Vector2.zero, Vector2.zero, null);
-        const float w = 560, h = 600;
-        var card = Box(dimmer, White, Vector2.zero, new Vector2(w, h));
-        pop = card;
+        var felt = TablePanel(dimmer, Vector2.zero, new Vector2(640, 720), t);
+        pop = (RectTransform)felt.parent;
         popT = 0;
-        Label(card, "Pausa", 60, Ink, new Vector2(0, h / 2 - 80), new Vector2(w, 80), bold: true);
-        var items = new List<(string, Color, Action)> { ("Riprendi", Worlds.ThemeOf(0).accent, resume) };
-        if (restart != null) items.Add(("Ricomincia", Soft, restart)); // online: no restart
-        items.Add(("Impostazioni", Soft, () => ShowSettings(() => ShowPause(resume, restart, levelsMenu, menuLabel))));
-        items.Add((menuLabel, Soft, levelsMenu));
+        Plaque(pop, "PAUSA", new Vector2(0, 360), t);
+        // each item is a ball: the 8 takes you out of the level
+        var items = new List<(string, int, Action)> { ("Riprendi", 1, resume) };
+        if (restart != null) items.Add(("Ricomincia", 2, restart)); // online: no restart
+        items.Add(("Impostazioni", 3, () => ShowSettings(() => ShowPause(resume, restart, levelsMenu, menuLabel))));
+        items.Add((menuLabel, 8, levelsMenu));
         for (int i = 0; i < items.Count; i++)
-            Btn(card, items[i].Item1, items[i].Item2, Ink, new Vector2(0, 110 - i * 105), new Vector2(400, 84), items[i].Item3, round);
+            BallBtn(felt, items[i].Item1, items[i].Item2, new Vector2(0, 150 - i * 105), new Vector2(420, 84), items[i].Item3);
     }
 
     Action settingsBack;
@@ -458,30 +489,27 @@ public partial class GameUI : MonoBehaviour
     {
         Hide();
         screen = Page.Settings;
-        var full = Rect(root, Vector2.zero, Vector2.zero);
-        Box(full, new Color(0, 0, 0, 0.6f), Vector2.zero, Vector2.zero, null);
-        var top = Corner(full, new Vector2(0, 1));
-        Label(top, "M I N I P O O L", 26, new Color(1, 1, 1, 0.7f), new Vector2(90, -70), new Vector2(600, 40), TextAnchor.MiddleLeft, true, true);
-        Label(top, "Impostazioni", 76, White, new Vector2(90, -135), new Vector2(1000, 90), TextAnchor.MiddleLeft, true, true);
-
-        var c = Corner(full, new Vector2(0.5f, 0.5f));
+        var t = Worlds.ThemeOf(0);
+        var dimmer = Box(root, new Color(0, 0, 0, 0.55f), Vector2.zero, Vector2.zero, null);
+        var c = TablePanel(dimmer, Vector2.zero, new Vector2(1240, 820), t);
+        Plaque(c.parent, "IMPOSTAZIONI", new Vector2(0, 410), t);
         static float Step(float v, float d, float lo, float hi) => Mathf.Clamp(Mathf.Round((v + d) * 100) / 100, lo, hi);
-        Row(c, 220, "Volume", $"{Mathf.RoundToInt(GameManager.Volume * 100)}%", d => GameManager.Volume = Step(GameManager.Volume, d * 0.1f, 0, 1));
-        Row(c, 120, "Musica", $"{Mathf.RoundToInt(Sfx.Music * 100)}%", d => Sfx.Music = Step(Sfx.Music, d * 0.1f, 0, 1));
-        Row(c, 20, "Sensibilità camera", $"×{GameManager.Sensitivity:0.00}", d => GameManager.Sensitivity = Step(GameManager.Sensitivity, d * 0.25f, 0.25f, 3));
-        Row(c, -80, "Schermo intero", fullscreen ? "Sì" : "No", _ =>
+        Row(c, 240, "Volume", $"{Mathf.RoundToInt(GameManager.Volume * 100)}%", d => GameManager.Volume = Step(GameManager.Volume, d * 0.1f, 0, 1), GameManager.Volume);
+        Row(c, 140, "Musica", $"{Mathf.RoundToInt(Sfx.Music * 100)}%", d => Sfx.Music = Step(Sfx.Music, d * 0.1f, 0, 1), Sfx.Music);
+        Row(c, 40, "Sensibilità camera", $"×{GameManager.Sensitivity:0.00}", d => GameManager.Sensitivity = Step(GameManager.Sensitivity, d * 0.25f, 0.25f, 3));
+        Row(c, -60, "Schermo intero", fullscreen ? "Sì" : "No", _ =>
         {
             fullscreen = !fullscreen;
             Screen.fullScreen = fullscreen;
         });
         var res = Resolutions();
         if (res.Count > 0)
-            Row(c, -180, "Risoluzione", $"{res[resIndex].x} × {res[resIndex].y}", d =>
+            Row(c, -160, "Risoluzione", $"{res[resIndex].x} × {res[resIndex].y}", d =>
             {
                 resIndex = (resIndex + d + res.Count) % res.Count;
                 Screen.SetResolution(res[resIndex].x, res[resIndex].y, fullscreen ? FullScreenMode.FullScreenWindow : FullScreenMode.Windowed);
             });
-        Btn(c, "Indietro", Glass, White, new Vector2(0, -360), new Vector2(260, 80), CloseSettings, round);
+        BallBtn(c, "Indietro", 0, new Vector2(0, -270), new Vector2(300, 76), CloseSettings);
     }
 
     void CloseSettings()
@@ -490,13 +518,29 @@ public partial class GameUI : MonoBehaviour
         settingsBack();
     }
 
-    // name on the left, value between ‹ › (change gets -1 / +1), then the page is rebuilt with the new value
-    void Row(Transform parent, float y, string name, string value, Action<int> change)
+    // name on the left, value between two cue-ball arrows (change gets -1 / +1), then the page is rebuilt with the new value;
+    // meter >= 0: the value is a row of ten balls, lit up to meter (0..1)
+    void Row(Transform parent, float y, string name, string value, Action<int> change, float meter = -1)
     {
-        Label(parent, name, 38, White, new Vector2(-520, y), new Vector2(460, 60), TextAnchor.MiddleLeft, true, true);
-        ArrowButton(parent, "‹", new Vector2(60, y), () => { change(-1); BuildSettings(); });
-        Label(parent, value, 38, White, new Vector2(260, y), new Vector2(300, 60), bold: true, shadow: true);
-        ArrowButton(parent, "›", new Vector2(460, y), () => { change(1); BuildSettings(); });
+        Label(parent, name, 38, Cream, new Vector2(-500, y), new Vector2(460, 60), TextAnchor.MiddleLeft, true, true, TitleFont);
+        CueArrow(parent, "‹", new Vector2(40, y), () => { change(-1); BuildSettings(); });
+        if (meter < 0) Label(parent, value, 38, Cream, new Vector2(270, y), new Vector2(340, 60), bold: true, shadow: true);
+        else
+            for (int i = 0, lit = Mathf.RoundToInt(meter * 10); i < 10; i++)
+            {
+                var at = new Vector2(270 + (i - 4.5f) * 34, y);
+                Box(parent, new Color(0, 0, 0, 0.3f), at + new Vector2(2, -3), Vector2.one * 30, circle); // shadow / empty slot on the felt
+                if (i >= lit) continue;
+                var ball = Box(parent, BallArt.ColorOf(i + 1), at, Vector2.one * 30, circle);
+                Box(ball, White, Vector2.zero, Vector2.one * 13, circle);
+            }
+        CueArrow(parent, "›", new Vector2(500, y), () => { change(1); BuildSettings(); });
+    }
+
+    void CueArrow(Transform parent, string s, Vector2 pos, Action click)
+    {
+        var b = Btn(parent, s, Cream, Ink, pos, new Vector2(64, 64), click, circle);
+        b.GetComponentInChildren<Text>().fontSize = 46;
     }
 
     static void Quit()
@@ -517,60 +561,98 @@ public partial class GameUI : MonoBehaviour
 
     // ---------- world select ----------
 
-    // one card per world (the prefab's template cloned next to it), colored with the world's table; then its levels
+    const float MapBallScale = 1f, MapCardScale = 0.8f;
+    static readonly Vector3 MapCardSpot = new(2.7f, 0, 2.9f); // the card's center on the table: the empty South Pacific
+    RectTransform mapCard;                                     // holder of the world card, kept on MapCardSpot (LateUpdate)
+
+    // the world map on the menu table: continents printed on the felt in a lighter tone with a faint grid of meridians and
+    // parallels (WorldMap), one ball per tournament (Worlds.Theme) on its city; locked or future ones dark. The chosen one
+    // grows and the prefab's world card shows it in the Pacific; a click on a ball (or the card) opens the world
     void ShowWorlds()
     {
         if (levels.Count == 0 || !view || !view.worlds || !view.worldCard) { ShowLevels(previewed); return; }
         Hide();
         screen = Page.Worlds;
         ShowTable(0);
+        if (table == null) return;
         view.worlds.gameObject.SetActive(true);
         view.worldCard.gameObject.SetActive(false);
-        for (int w = 0; w <= Worlds.WorldOf(levels.Max()); w++)
+        foreach (var n in new[] { "Title", "Caption" }) // the card page's title: on the map it would cover the north
+            if (view.worlds.Find(n) is { } title) title.gameObject.SetActive(false);
+        var felt = Worlds.ThemeOf(0).felt;
+        spawned.Add(WorldMap.Build(table.root, Color.Lerp(felt, Cream, 0.3f)));
+        if (!lineMat) lineMat = new Material(Shader.Find("Universal Render Pipeline/Unlit"));
+        lineMat.color = Color.Lerp(felt, Cream, 0.15f);
+        for (int lat = -30; lat <= 60; lat += 30)
+            Segment(WorldMap.Project(new Vector2(-172, lat)), WorldMap.Project(new Vector2(182, lat)), lineMat, 0.002f, 0.025f);
+        for (int lon = -150; lon <= 180; lon += 30)
+            Segment(WorldMap.Project(new Vector2(lon, -45)), WorldMap.Project(new Vector2(lon, 80)), lineMat, 0.002f, 0.025f);
+        int last = Worlds.WorldOf(levels.Max());
+        for (int w = 0; w < Worlds.Themes.Length; w++)
         {
-            int k = w;
-            var theme = Worlds.ThemeOf(w);
-            var mine = levels.Where(l => Worlds.WorldOf(l) == w).ToList();
-            bool open = WorldOpen(w);
-            var c = Instantiate(view.worldCard, view.worldCard.transform.parent);
-            c.gameObject.SetActive(true);
-            spawned.Add(c.gameObject);
-            if (c.frame) c.frame.color = theme.wood;
-            if (c.felt) c.felt.color = theme.felt;
-            if (c.number) c.number.text = (w + 1).ToString();
-            if (c.title) c.title.text = theme.name.ToUpperInvariant();
-            int done = mine.Count(GameManager.Completed), crowns = mine.Count(GameManager.Crown);
-            if (c.progress) c.progress.text = !open ? "BLOCCATO" : $"{done} / {mine.Count}" + (crowns > 0 ? $"   ·   {crowns} {(crowns == 1 ? "corona" : "corone")}" : "");
-            if (c.highlight) c.highlight.enabled = false;
-            if (c.preview && mine.Count > 0)
+            var pos = WorldMap.Project(Worlds.Themes[w].city) + Vector3.up * Ball.Radius * MapBallScale;
+            var ball = LevelBuilder.SpawnBall(w + 1, pos, table.root).transform;
+            spawned.Add(ball.gameObject);
+            ball.localScale = Vector3.one * MapBallScale;
+            ball.rotation = Facing(ball, Vector3.up, Vector3.forward);
+            if (w > last || !WorldOpen(w))
             {
-                LevelBuilder.SetTheme(theme); // the preview in its own world's colors (materials are cached by color)
-                c.preview.texture = PiecePreview(Resources.Load<TextAsset>($"Levels/level{mine[0]:00}").text, w, theme.sky);
-            }
-            if (c.dot)
-            {
-                // one dot per level: done, crowned, still to do
-                c.dot.gameObject.SetActive(false);
-                foreach (int l in mine)
-                {
-                    var d = Instantiate(c.dot, c.dot.transform.parent);
-                    d.gameObject.SetActive(true);
-                    d.color = GameManager.Crown(l) ? c.dotCrown : GameManager.Completed(l) ? c.dotDone : c.dotTodo;
-                }
-            }
-            if (!open)
-            {
-                c.gameObject.AddComponent<CanvasGroup>().alpha = c.lockedAlpha;
-                if (c.button) c.button.interactable = false;
+                foreach (var r in ball.GetComponentsInChildren<Renderer>()) r.sharedMaterial = Dim(w + 1);
                 continue;
             }
-            worldCards.Add((w, c));
-            if (c.button) c.button.onClick.AddListener(() => { Sfx.Play(Sfx.Kind.Click, 1); OpenWorld(k); });
-            OnEnter(c, () => worldSel = k);
+            pins[w] = ball;
+            if (GameManager.WorldDone(w, true)) CrownHull(ball);
         }
-        LevelBuilder.SetTheme(Worlds.ThemeOf(0)); // back to the table's
-        int last = Worlds.WorldOf(previewed > 0 ? previewed : levels[0]);
-        worldSel = worldCards.Any(c => c.world == last) ? last : worldCards.Count > 0 ? worldCards[^1].world : 0;
+        int played = Worlds.WorldOf(previewed > 0 ? previewed : levels[0]);
+        worldSel = -1;
+        if (pins.Count > 0) SelectWorld(pins.ContainsKey(played) ? played : pins.Keys.Max());
+    }
+
+    // the prefab's world card (a fresh copy) for the chosen tournament: name, country, progress, its first level turning
+    void SelectWorld(int w)
+    {
+        worldSel = w;
+        if (mapCard) { spawned.Remove(mapCard.gameObject); Destroy(mapCard.gameObject); }
+        ClearPreviews();
+        var theme = Worlds.ThemeOf(w);
+        var mine = levels.Where(l => Worlds.WorldOf(l) == w).ToList();
+        mapCard = Rect(view.worlds, Vector2.zero, Vector2.one);
+        mapCard.localScale = Vector3.one * MapCardScale;
+        spawned.Add(mapCard.gameObject);
+        var c = Instantiate(view.worldCard, mapCard);
+        c.gameObject.SetActive(true);
+        var rt = (RectTransform)c.transform;
+        rt.anchorMin = rt.anchorMax = rt.pivot = new Vector2(0.5f, 0.5f);
+        rt.anchoredPosition = Vector2.zero;
+        if (c.frame) c.frame.color = theme.wood;
+        if (c.felt) c.felt.color = theme.felt;
+        if (c.number) c.number.text = (w + 1).ToString();
+        if (c.title) c.title.text = theme.tournament.ToUpperInvariant();
+        int done = mine.Count(GameManager.Completed), crowns = mine.Count(GameManager.Crown);
+        if (c.progress) c.progress.text = $"{theme.country.ToUpperInvariant()}   ·   {done} / {mine.Count}" + (crowns > 0 ? $"   ·   {crowns} {(crowns == 1 ? "corona" : "corone")}" : "");
+        if (c.highlight) c.highlight.enabled = true;
+        if (c.preview && mine.Count > 0)
+        {
+            LevelBuilder.SetTheme(theme); // the preview in its own world's colors (materials are cached by color)
+            c.preview.texture = PiecePreview(Resources.Load<TextAsset>($"Levels/level{mine[0]:00}").text, w, theme.sky);
+            LevelBuilder.SetTheme(Worlds.ThemeOf(0)); // back to the table's
+        }
+        if (c.dot)
+        {
+            // one dot per level: done, crowned, still to do
+            c.dot.gameObject.SetActive(false);
+            foreach (int l in mine)
+            {
+                var d = Instantiate(c.dot, c.dot.transform.parent);
+                d.gameObject.SetActive(true);
+                d.color = GameManager.Crown(l) ? c.dotCrown : GameManager.Completed(l) ? c.dotDone : c.dotTodo;
+            }
+        }
+        if (c.button) c.button.onClick.AddListener(() => { Sfx.Play(Sfx.Kind.Click, 1); OpenWorld(w); });
+        pop = rt;
+        popT = 0;
+        popBall = null;
+        LateUpdate();
     }
 
     // the world's levels, starting on the last level played there if it's open, otherwise its last open level
@@ -647,15 +729,15 @@ public partial class GameUI : MonoBehaviour
     }
 
     // flat strip on the felt between two balls
-    void Segment(Vector3 a, Vector3 b, Material mat)
+    void Segment(Vector3 a, Vector3 b, Material mat, float y = 0.004f, float width = -1)
     {
-        a.y = b.y = 0.004f;
+        a.y = b.y = y;
         var go = GameObject.CreatePrimitive(PrimitiveType.Cube);
         spawned.Add(go);
         Destroy(go.GetComponent<Collider>());
         go.transform.SetParent(table.root, false);
         go.transform.SetPositionAndRotation((a + b) / 2, Quaternion.LookRotation(b - a));
-        go.transform.localScale = new Vector3(view.lineWidth, 0.008f, (b - a).magnitude);
+        go.transform.localScale = new Vector3(width > 0 ? width : view.lineWidth, 0.008f, (b - a).magnitude);
         var r = go.GetComponent<Renderer>();
         r.sharedMaterial = mat;
         r.shadowCastingMode = ShadowCastingMode.Off;
@@ -1000,16 +1082,17 @@ public partial class GameUI : MonoBehaviour
         Hide();
         var theme = Worlds.ThemeOf(Worlds.WorldOf(level));
         var dimmer = Box(root, new Color(0, 0, 0, 0.45f), Vector2.zero, Vector2.zero, null);
-        const float w = 760, h = 560;
-        var card = Box(dimmer, White, new Vector2(0, -20), new Vector2(w, h));
-        pop = card;
+        const float w = 900, h = 640;
+        var card = TablePanel(dimmer, new Vector2(0, -20), new Vector2(w, h), theme);
+        pop = (RectTransform)card.parent;
         popT = 0;
 
-        var ball = Rect(card, new Vector2(0, h / 2), Vector2.one * 150);
+        // the level's ball rests on the top rail
+        var ball = Rect(pop, new Vector2(0, h / 2), Vector2.one * 150);
         AddModel(ball, BallArt.Material(Worlds.BallOf(level))).spin = true;
         if (Rules.Crown(shots, par)) CrownOutline(ball);
-        Label(card, "Livello completato!", 52, Ink, new Vector2(0, h / 2 - 125), new Vector2(w, 70), bold: true);
-        Label(card, $"Mondo {Worlds.WorldOf(level) + 1} · {theme.name} · Livello {Worlds.BallOf(level)}", 26, Grey, new Vector2(0, h / 2 - 175), new Vector2(w, 40));
+        Plaque(card, "IN BUCA!", new Vector2(0, 170), theme, 52);
+        Label(card, $"{theme.tournament} · {theme.country} · Livello {Worlds.BallOf(level)}", 26, Cream, new Vector2(0, 100), new Vector2(w, 40), shadow: true);
 
         var stats = new[]
         {
@@ -1018,21 +1101,73 @@ public partial class GameUI : MonoBehaviour
         };
         for (int i = 0; i < stats.Length; i++)
         {
-            var x = (i - (stats.Length - 1) / 2f) * 220f;
-            Box(card, Soft, new Vector2(x, -10), new Vector2(200, 140));
-            Label(card, stats[i].Item2, 60, Ink, new Vector2(x, 10), new Vector2(200, 80), bold: true);
-            Label(card, stats[i].Item1, 24, Grey, new Vector2(x, -50), new Vector2(200, 36));
+            var x = (i - (stats.Length - 1) / 2f) * 240f;
+            Box(card, theme.cushion, new Vector2(x, -10), new Vector2(220, 140));
+            Label(card, stats[i].Item2, 60, Cream, new Vector2(x, 12), new Vector2(220, 80), bold: true, shadow: true, f: TitleFont);
+            Label(card, stats[i].Item1, 24, new Color(Cream.r, Cream.g, Cream.b, 0.8f), new Vector2(x, -50), new Vector2(220, 36));
         }
 
-        if (!string.IsNullOrEmpty(note)) Label(card, note, 24, RecordColor, new Vector2(0, -128), new Vector2(w, 84), bold: true);
+        if (!string.IsNullOrEmpty(note)) Label(card, note, 26, theme.accent, new Vector2(0, -122), new Vector2(w, 60), bold: true, shadow: true);
 
-        var buttons = new List<(string, Color, Color, Action)>
+        // ball buttons: the 8 leaves, the cue ball plays again, the next level's ball goes on
+        var buttons = new List<(string, int, Action)> { ("Menu", 8, () => onMenu?.Invoke()), ("Rigioca", 0, () => onPlay?.Invoke(level)) };
+        if (next > 0) buttons.Add((Worlds.WorldOf(next) != Worlds.WorldOf(level) ? "Torneo dopo" : "Prossimo", Worlds.BallOf(next), () => onPlay?.Invoke(next)));
+        for (int i = 0; i < buttons.Count; i++)
+            BallBtn(card, buttons[i].Item1, buttons[i].Item2, new Vector2((i - (buttons.Count - 1) / 2f) * 250, -200), new Vector2(230, 76), buttons[i].Item3);
+    }
+
+    // a small pool table as a panel: wood rails with diamonds, cushions, six pockets; returns the felt (place children from its center)
+    RectTransform TablePanel(Transform parent, Vector2 pos, Vector2 size, Worlds.Theme t)
+    {
+        const float Rail = 46, Cushion = 14, Pocket = 58;
+        var frame = Rect(parent, pos, size);
+        Box(frame, new Color(0, 0, 0, 0.45f), new Vector2(0, -14), size); // shadow
+        Box(frame, t.wood, Vector2.zero, size);
+        Box(frame, t.darkWood, Vector2.zero, size - Vector2.one * (Rail * 2 - 10));
+        Box(frame, t.cushion, Vector2.zero, size - Vector2.one * Rail * 2, null);
+        var felt = Box(frame, t.felt, Vector2.zero, size - Vector2.one * (Rail + Cushion) * 2, null);
+        float hx = size.x / 2 - Rail * 0.75f, hy = size.y / 2 - Rail * 0.75f, side = size.y / 2 - Rail * 0.6f;
+        foreach (var p in new[] { new Vector2(-hx, hy), new Vector2(hx, hy), new Vector2(-hx, -hy), new Vector2(hx, -hy), new Vector2(0, side), new Vector2(0, -side) })
+            Box(frame, new Color(0.04f, 0.04f, 0.05f), p, Vector2.one * Pocket, circle);
+        for (int k = -3; k <= 3; k++) // diamonds: three per half of a long rail, three on each short rail
         {
-            ("Menu", Soft, Ink, () => onMenu?.Invoke()),
-            ("Rigioca", Soft, Ink, () => onPlay?.Invoke(level)),
-        };
-        if (next > 0) buttons.Add((Worlds.WorldOf(next) != Worlds.WorldOf(level) ? "Mondo successivo" : "Prossimo", theme.accent, Ink, () => onPlay?.Invoke(next)));
-        Bar(card, new Vector2(0, -h / 2 + 70), new Vector2(next > 0 ? 210 : 260, 76), 20, buttons.ToArray());
+            if (k != 0)
+                foreach (int s in new[] { 1, -1 }) Diamond(frame, new Vector2(k * (size.x - 2 * Rail) / 8, s * (size.y / 2 - Rail / 2)));
+            if (Mathf.Abs(k) <= 1)
+                foreach (int s in new[] { 1, -1 }) Diamond(frame, new Vector2(s * (size.x / 2 - Rail / 2), k * (size.y - 2 * Rail) / 4));
+        }
+        return felt;
+    }
+
+    void Diamond(Transform parent, Vector2 at) => Box(parent, Cream, at, new Vector2(11, 11), null).localRotation = Quaternion.Euler(0, 0, 45);
+
+    // a title on a dark wood plaque with an accent border, sized to its text
+    Text Plaque(Transform parent, string s, Vector2 pos, Worlds.Theme t, int size = 46)
+    {
+        float h = size * 1.6f;
+        var l = Label(parent, s, size, Cream, pos, new Vector2(10, h), bold: true, shadow: true, f: TitleFont);
+        float w = l.preferredWidth + 80;
+        Box(parent, t.accent, pos, new Vector2(w + 8, h + 8)).SetSiblingIndex(l.transform.GetSiblingIndex());
+        Box(parent, t.darkWood, pos, new Vector2(w, h)).SetSiblingIndex(l.transform.GetSiblingIndex());
+        return l;
+    }
+
+    // an ivory button with pool ball n (0 = the equipped cue ball) on its left
+    Button BallBtn(Transform parent, string s, int n, Vector2 pos, Vector2 size, Action click)
+    {
+        var b = Btn(parent, s, Cream, Ink, pos, size, click, round);
+        var text = b.GetComponentInChildren<Text>().rectTransform;
+        float d = size.y - 18;
+        var at = new Vector2(-size.x / 2 + d / 2 + 10, 0);
+        Box(b.transform, Ink, at, Vector2.one * (d + 4), circle);
+        var ball = Box(b.transform, BallArt.ColorOf(n), at, Vector2.one * d, circle);
+        if (n > 0)
+        {
+            Box(ball, White, Vector2.zero, Vector2.one * d * 0.56f, circle);
+            Label(ball, n.ToString(), Mathf.RoundToInt(d * 0.36f), Ink, Vector2.zero, Vector2.one * d, bold: true);
+        }
+        text.anchoredPosition = new Vector2(d / 2, 0); // the label centered in what's left
+        return b;
     }
 
     // a row of equal buttons centered on pos, laid out by uGUI (HorizontalLayoutGroup): one more button needs no new coordinates
@@ -1060,12 +1195,7 @@ public partial class GameUI : MonoBehaviour
             var rot = Quaternion.Euler(50, Time.unscaledTime * 25 + i * 47, 0);
             c.transform.SetPositionAndRotation(b.center - rot * Vector3.forward * (Mathf.Max(b.size.x, b.size.z) * 1.6f + 3), rot);
         }
-        foreach (var (w, c) in worldCards)
-        {
-            float s = Mathf.Lerp(c.transform.localScale.x, w == worldSel ? view.cardHoverScale : 1f, 1 - Mathf.Exp(-14 * dt));
-            c.transform.localScale = Vector3.one * s;
-            if (c.highlight && c.highlight.enabled != (w == worldSel)) c.highlight.enabled = w == worldSel;
-        }
+        foreach (var (w, t) in pins) Grow(t, w == worldSel, MapBallScale);
         foreach (var (lv, t) in icons) Grow(t, lv == selected, view.ballScale);
         foreach (var (k, t) in skinBalls) Grow(t, k == skinShown, view.skinBallScale);
         if (rack) // the chosen cue slides out of the rack toward the room, the equipped one a little less, the rest back
@@ -1089,6 +1219,18 @@ public partial class GameUI : MonoBehaviour
         }
 
         var kb = Keyboard.current;
+        if (screen == Page.Intro)
+        {
+            introT += dt;
+            if (table != null) PoolPhysics.Simulate(table, Mathf.Min(dt, 0.05f));
+            bool skip = kb != null && (kb.enterKey.wasPressedThisFrame || kb.escapeKey.wasPressedThisFrame || kb.spaceKey.wasPressedThisFrame);
+            if (introT > IntroSwap || skip)
+            {
+                glideUntil = Time.unscaledTime + 3; // from close to the felt back out over the map
+                ShowWorlds();
+            }
+            return;
+        }
         if (kb == null) return;
         int move = (kb.rightArrowKey.wasPressedThisFrame ? 1 : 0) - (kb.leftArrowKey.wasPressedThisFrame ? 1 : 0);
         bool enter = kb.enterKey.wasPressedThisFrame || kb.numpadEnterKey.wasPressedThisFrame, esc = kb.escapeKey.wasPressedThisFrame;
@@ -1118,8 +1260,15 @@ public partial class GameUI : MonoBehaviour
         }
         else if (screen == Page.Worlds)
         {
-            int k = worldCards.FindIndex(c => c.world == worldSel);
-            if (move != 0 && k + move >= 0 && k + move < worldCards.Count) worldSel = worldCards[k + move].world;
+            int hover = Hovered(pins);
+            if (hover >= 0)
+            {
+                if (hover != worldSel) SelectWorld(hover);
+                if (Mouse.current.leftButton.wasPressedThisFrame) { Sfx.Play(Sfx.Kind.Click, 1); OpenWorld(hover); return; }
+            }
+            var open = pins.Keys.OrderBy(w => w).ToList();
+            int k = open.IndexOf(worldSel);
+            if (move != 0 && k + move >= 0 && k + move < open.Count) SelectWorld(open[k + move]);
             if (enter && k >= 0) OpenWorld(worldSel);
             else if (esc) ShowHome();
         }
@@ -1211,6 +1360,11 @@ public partial class GameUI : MonoBehaviour
                 pointer.anchorMin = pointer.anchorMax = new Vector2(0.5f, above ? 0 : 1);
                 pointer.anchoredPosition = Vector2.zero;
             }
+        }
+        if (mapCard && mapCard.parent is RectTransform panel) // the world card stays on its spot of the table while the camera moves
+        {
+            RectTransformUtility.ScreenPointToLocalPointInRectangle(panel, cam.WorldToScreenPoint(MapCardSpot), cam, out var at);
+            mapCard.anchoredPosition = at - panel.rect.center;
         }
         if (marker && view && ItemLabel(homeSel) is { } item)
         {
